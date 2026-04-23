@@ -1,9 +1,13 @@
-from PIL import Image
+from PIL import Image, ImageDraw
 from evol import Evolution, Population
+from copy import deepcopy
+from skimage import feature
 
 import random
 import os
-from copy import deepcopy
+import cv2
+import numpy as np
+
 
 from voronoi_painting import VoronoiPainting
 
@@ -38,7 +42,7 @@ def pick_random(pop):
     dad = random.choice(pop)
     return mom, dad
 
-
+# The mutation function, it mutates the painting by mutating the points, the mutation is done in place, but we return a deepcopy of the painting to avoid issues with multiprocessing and to make sure we don't mutate the original painting in place
 def mutate_painting(x: VoronoiPainting, rate=0.04, sigma=1) -> VoronoiPainting:
     x.mutate_points(rate=rate, sigma=sigma)
     return deepcopy(x)
@@ -48,7 +52,7 @@ def shrink_painting(x: VoronoiPainting) -> VoronoiPainting:
     x.shrink_points()
     return deepcopy(x)
 
-
+# The crossover function, it creates a child painting by combining the points of the mom and dad paintings, the crossover is done in place, but we return a deepcopy of the child painting to avoid issues with multiprocessing and to make sure we don't mutate the original paintings in place
 def mate(mom: VoronoiPainting, dad: VoronoiPainting):
     child_a, child_b = VoronoiPainting.mate(mom, dad)
 
@@ -80,6 +84,26 @@ def print_summary(pop, img_template="output%d.png", checkpoint_path="output") ->
 
     return pop
 
+# Condense similar colors in the palette to create a more distinct set of colors
+def condense_palette(colors, threshold=30):
+    condensed = []
+    for color in colors:
+        if all(sum((c1 - c2) ** 2 for c1, c2 in zip(color, other)) ** 0.5 > threshold for other in condensed):
+            condensed.append(color)
+    return condensed
+
+# Reduce the condensed palette to the requested number of colors
+def simplify_palette(colors, target_count):
+    condensed = condense_palette(colors)
+    if len(condensed) <= target_count:
+        return condensed
+
+    if target_count == 1:
+        return [condensed[0]]
+
+    step = (len(condensed) - 1) / (target_count - 1)
+    return [condensed[round(i * step)] for i in range(target_count)]
+
 
 if __name__ == "__main__":
     target_image_path = "./img/girl_with_pearl_earring_half.jpg"
@@ -90,6 +114,30 @@ if __name__ == "__main__":
     num_points = 250
     population_size = 250
 
+    initialColorCount = 60
+    finalColorCount = 20
+
+    #Extract color palette from target image, we will use this palette to initialize the points with colors that are present in the target image, this will help the algorithm to converge faster
+    # palette = target_image.getcolors(maxcolors=1000)
+    converted_img = target_image.convert("P", palette=Image.ADAPTIVE, colors=initialColorCount)
+    # converted_img.show()
+    palette = converted_img.getpalette()[:initialColorCount * 3]  # Get the RGB values
+    colors = [tuple(palette[i:i + 3]) for i in range(0, len(palette), 3)]
+
+    # Visualize the color palette as a set of colored squares
+    palette_img = Image.new("RGB", (initialColorCount * 20, 20))
+    draw = ImageDraw.Draw(palette_img)
+    for i, color in enumerate(colors):
+        draw.rectangle([i * 20, 0, (i + 1) * 20, 20], fill=color)
+    palette_img.show()
+    # Condense the palette and visualize the condensed colors
+    condensed_colors = simplify_palette(colors, finalColorCount)
+    print(f"Original colors: {len(colors)}, Condensed colors: {len(condensed_colors)}")
+    palette_img = Image.new("RGB", (finalColorCount * 20, 20))
+    draw = ImageDraw.Draw(palette_img)
+    for i, color in enumerate(condensed_colors):
+        draw.rectangle([i * 20, 0, (i + 1) * 20, 20], fill=color)
+    palette_img.show()
     pop = Population(chromosomes=[VoronoiPainting(num_points, target_image, background_color=(128, 128, 128)) for _ in
                                   range(population_size)],
                      eval_function=score, maximize=False, concurrent_workers=4)
