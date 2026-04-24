@@ -236,7 +236,7 @@ def create_region_seeded_population(
 
 
 if __name__ == "__main__":
-    target_image_path = "./img/girl_with_pearl_earring_half.jpg"
+    target_image_path = "./img/battleship.jpeg"
     checkpoint_path = "./output/"
     image_template = os.path.join(checkpoint_path, "drawing_%05d.png")
     target_image = Image.open(target_image_path).convert("RGBA")
