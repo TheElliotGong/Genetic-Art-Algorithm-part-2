@@ -93,6 +93,47 @@ def print_summary(
     return pop
 
 
+def scale_generations(count, scale):
+    return max(1, int(round(count * scale)))
+
+
+def evolve_phase_with_early_stop(
+    pop,
+    evolution_step,
+    generations,
+    label,
+    improvement_window=200,
+    min_improvement_ratio=0.0075,
+):
+    best_fitness = None
+    window_reference_best = None
+
+    for generation_idx in range(generations):
+        pop = pop.evolve(evolution_step, n=1)
+        current_best = pop.current_best.fitness
+
+        if best_fitness is None or current_best < best_fitness:
+            best_fitness = current_best
+
+        if (generation_idx + 1) % improvement_window == 0:
+            if window_reference_best is None:
+                window_reference_best = best_fitness
+                continue
+
+            baseline = max(abs(window_reference_best), 1e-12)
+            improvement = (window_reference_best - best_fitness) / baseline
+            if improvement < min_improvement_ratio:
+                print(
+                    f"\nEarly stop in {label} at local generation {generation_idx + 1}: "
+                    f"{improvement * 100:.3f}% improvement over last {improvement_window} generations"
+                )
+                break
+
+            window_reference_best = best_fitness
+
+    return pop
+
+
 # Condense similar colors in the palette to create a more distinct set of colors
 def condense_palette(colors, threshold=30):
     condensed = []
@@ -244,6 +285,10 @@ if __name__ == "__main__":
     num_points = 250
     population_size = 250
 
+    generation_scale = float(os.getenv("GENERATION_SCALE", "0.6"))
+    early_stop_window = int(os.getenv("EARLY_STOP_WINDOW", "200"))
+    min_improvement_ratio = float(os.getenv("MIN_IMPROVEMENT_RATIO", "0.0075"))
+
     initialColorCount = 60
     finalColorCount = 20
 
@@ -377,16 +422,75 @@ if __name__ == "__main__":
         )
     )
 
+    phase_250 = scale_generations(999, generation_scale)
+    phase_500_main = scale_generations(899, generation_scale)
+    phase_800_main_1 = scale_generations(900, generation_scale)
+    phase_800_main_2 = scale_generations(900, generation_scale)
+    phase_final_refine = scale_generations(1000, generation_scale)
+    shrink_generations = scale_generations(100, generation_scale)
+
+    total_scaled_generations = (
+        phase_250
+        + phase_500_main
+        + shrink_generations
+        + phase_800_main_1
+        + shrink_generations
+        + phase_800_main_2
+        + shrink_generations
+        + phase_final_refine
+        + 2
+    )
+    print(
+        "Evolution schedule: "
+        f"scale={generation_scale}, total generations={total_scaled_generations}, "
+        f"early-stop window={early_stop_window}, min-improvement={min_improvement_ratio}"
+    )
+
     # 250 points
-    pop = pop.evolve(evo_step_1, n=999)
+    pop = evolve_phase_with_early_stop(
+        pop,
+        evo_step_1,
+        phase_250,
+        label="250-point exploration",
+        improvement_window=early_stop_window,
+        min_improvement_ratio=min_improvement_ratio,
+    )
     pop = pop.evolve(genome_duplication, n=1)
     # 500 points
-    pop = pop.evolve(evo_step_1, n=899)
-    pop = pop.evolve(shrink_step, n=100)
+    pop = evolve_phase_with_early_stop(
+        pop,
+        evo_step_1,
+        phase_500_main,
+        label="500-point exploration",
+        improvement_window=early_stop_window,
+        min_improvement_ratio=min_improvement_ratio,
+    )
+    pop = pop.evolve(shrink_step, n=shrink_generations)
     pop = pop.evolve(genome_duplication, n=1)
     # 800 points
-    pop = pop.evolve(evo_step_2, n=900)
-    pop = pop.evolve(shrink_step, n=100)
-    pop = pop.evolve(evo_step_2, n=900)
-    pop = pop.evolve(shrink_step, n=100)
-    pop = pop.evolve(evo_step_3, n=1000)
+    pop = evolve_phase_with_early_stop(
+        pop,
+        evo_step_2,
+        phase_800_main_1,
+        label="800-point exploration A",
+        improvement_window=early_stop_window,
+        min_improvement_ratio=min_improvement_ratio,
+    )
+    pop = pop.evolve(shrink_step, n=shrink_generations)
+    pop = evolve_phase_with_early_stop(
+        pop,
+        evo_step_2,
+        phase_800_main_2,
+        label="800-point exploration B",
+        improvement_window=early_stop_window,
+        min_improvement_ratio=min_improvement_ratio,
+    )
+    pop = pop.evolve(shrink_step, n=shrink_generations)
+    pop = evolve_phase_with_early_stop(
+        pop,
+        evo_step_3,
+        phase_final_refine,
+        label="final refinement",
+        improvement_window=early_stop_window,
+        min_improvement_ratio=min_improvement_ratio,
+    )
