@@ -13,9 +13,35 @@ from voronoi_painting import VoronoiPainting
 
 
 def score(x: VoronoiPainting) -> float:
-    current_score = x.image_diff(x.target_image)
+    # Approximate fitness: render at reduced scale and compute vectorized MSE
+    global FITNESS_SCALE, _SCALED_TARGET_NP
+    try:
+        scale = FITNESS_SCALE
+    except NameError:
+        scale = float(os.getenv("FITNESS_SCALE", "1.0"))
+        FITNESS_SCALE = scale
+
+    # Render the candidate at the fitness scale
+    src_img = x.draw(scale=scale).convert("RGB")
+    src_np = np.array(src_img, dtype=np.float32)
+
+    # Lazily prepare the scaled target (cached for all evaluations)
+    if scale == 1.0:
+        tgt_np = np.array(x.target_image.convert("RGB"), dtype=np.float32)
+    else:
+        if "_SCALED_TARGET_NP" not in globals():
+            tgt = x.target_image.resize(
+                (int(x.target_image.width * scale), int(x.target_image.height * scale)),
+                resample=Image.BILINEAR,
+            ).convert("RGB")
+            _SCALED_TARGET_NP = np.array(tgt, dtype=np.float32)
+        tgt_np = _SCALED_TARGET_NP
+
+    # Mean squared error as fitness (lower is better)
+    diff = src_np - tgt_np
+    mse = float(np.mean(np.square(diff)))
     print(".", end="", flush=True)
-    return current_score
+    return mse
 
 
 def pick_best_and_random(pop, maximize=False):
@@ -76,7 +102,7 @@ def merge(mom: VoronoiPainting, dad: VoronoiPainting):
 
 
 def print_summary(
-    pop, img_template="output%d.png", checkpoint_path="output"
+    pop, img_template="output%d.png", checkpoint_path="output", output_scale=1.0
 ) -> Population:
     avg_fitness = sum([i.fitness for i in pop.individuals]) / len(pop.individuals)
     chromosome_length = pop.individuals[0].chromosome.num_points
@@ -84,7 +110,7 @@ def print_summary(
         "\nCurrent generation %d, best score %f, pop. avg. %f. Chromosome length %d"
         % (pop.generation, pop.current_best.fitness, avg_fitness, chromosome_length)
     )
-    img = pop.current_best.chromosome.draw(scale=3)
+    img = pop.current_best.chromosome.draw(scale=output_scale)
     img.save(img_template % pop.generation, "PNG")
 
     if pop.generation % 50 == 0:
@@ -242,6 +268,7 @@ def create_region_seeded_population(
     region_groups,
     fallback_palette,
     region_bias=0.8,
+    output_scale=1.0,
 ):
     weighted_regions = [r for r in region_groups if r["area"] > 0]
     weights = [r["area"] for r in weighted_regions]
@@ -249,7 +276,10 @@ def create_region_seeded_population(
     chromosomes = []
     for _ in range(population_size):
         painting = VoronoiPainting(
-            num_points, target_image, background_color=(128, 128, 128)
+            num_points,
+            target_image,
+            background_color=(128, 128, 128),
+            output_scale=output_scale,
         )
 
         for point in painting.points:
@@ -278,7 +308,7 @@ def create_region_seeded_population(
 
 if __name__ == "__main__":
     target_image_path = "./img/battleship.jpeg"
-    checkpoint_path = "./output/"
+    checkpoint_path = "./output/battleship"
     image_template = os.path.join(checkpoint_path, "drawing_%05d.png")
     target_image = Image.open(target_image_path).convert("RGBA")
 
@@ -287,7 +317,8 @@ if __name__ == "__main__":
 
     generation_scale = float(os.getenv("GENERATION_SCALE", "0.6"))
     early_stop_window = int(os.getenv("EARLY_STOP_WINDOW", "200"))
-    min_improvement_ratio = float(os.getenv("MIN_IMPROVEMENT_RATIO", "0.0075"))
+    min_improvement_ratio = float(os.getenv("MIN_IMPROVEMENT_RATIO", "0.01"))
+    output_scale = float(os.getenv("OUTPUT_SCALE", "2.0"))
 
     initialColorCount = 60
     finalColorCount = 20
@@ -334,13 +365,14 @@ if __name__ == "__main__":
         region_groups,
         condensed_colors,
         region_bias=0.85,
+        output_scale=output_scale,
     )
 
     pop = Population(
         chromosomes=seeded_chromosomes,
         eval_function=score,
         maximize=False,
-        concurrent_workers=4,
+        concurrent_workers=6,
     )
 
     # Code to load a pickled/stored version, each 50 generation the population is written to disk
@@ -362,7 +394,10 @@ if __name__ == "__main__":
         .mutate(mutate_function=mutate_painting, rate=0.05, sigma=0.5)
         .evaluate(lazy=False)
         .callback(
-            print_summary, img_template=image_template, checkpoint_path=checkpoint_path
+            print_summary,
+            img_template=image_template,
+            checkpoint_path=checkpoint_path,
+            output_scale=output_scale,
         )
     )
 
@@ -377,7 +412,10 @@ if __name__ == "__main__":
         .mutate(mutate_function=mutate_painting, rate=0.05, sigma=0.5)
         .evaluate(lazy=False)
         .callback(
-            print_summary, img_template=image_template, checkpoint_path=checkpoint_path
+            print_summary,
+            img_template=image_template,
+            checkpoint_path=checkpoint_path,
+            output_scale=output_scale,
         )
     )
 
@@ -392,7 +430,10 @@ if __name__ == "__main__":
         .mutate(mutate_function=mutate_painting, rate=0.03, sigma=0.4)
         .evaluate(lazy=False)
         .callback(
-            print_summary, img_template=image_template, checkpoint_path=checkpoint_path
+            print_summary,
+            img_template=image_template,
+            checkpoint_path=checkpoint_path,
+            output_scale=output_scale,
         )
     )
 
@@ -407,7 +448,10 @@ if __name__ == "__main__":
         .mutate(mutate_function=mutate_painting, rate=0.005, sigma=0.4)
         .evaluate(lazy=False)
         .callback(
-            print_summary, img_template=image_template, checkpoint_path=checkpoint_path
+            print_summary,
+            img_template=image_template,
+            checkpoint_path=checkpoint_path,
+            output_scale=output_scale,
         )
     )
 
@@ -418,7 +462,10 @@ if __name__ == "__main__":
         .mutate(mutate_function=shrink_painting)
         .evaluate(lazy=False)
         .callback(
-            print_summary, img_template=image_template, checkpoint_path=checkpoint_path
+            print_summary,
+            img_template=image_template,
+            checkpoint_path=checkpoint_path,
+            output_scale=output_scale,
         )
     )
 
@@ -443,7 +490,8 @@ if __name__ == "__main__":
     print(
         "Evolution schedule: "
         f"scale={generation_scale}, total generations={total_scaled_generations}, "
-        f"early-stop window={early_stop_window}, min-improvement={min_improvement_ratio}"
+        f"early-stop window={early_stop_window}, min-improvement={min_improvement_ratio}, "
+        f"output-scale={output_scale}"
     )
 
     # 250 points
