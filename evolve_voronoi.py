@@ -14,12 +14,18 @@ from voronoi_painting import VoronoiPainting
 
 def score(x: VoronoiPainting) -> float:
     # Approximate fitness: render at reduced scale and compute vectorized MSE
-    global FITNESS_SCALE, _SCALED_TARGET_NP
+    global FITNESS_SCALE, _SCALED_TARGET_NP, _SCORE_TARGET_IMAGE
     try:
         scale = FITNESS_SCALE
     except NameError:
         scale = float(os.getenv("FITNESS_SCALE", "1.0"))
         FITNESS_SCALE = scale
+
+    try:
+        target_image = _SCORE_TARGET_IMAGE
+    except NameError:
+        target_image = x.target_image
+        _SCORE_TARGET_IMAGE = target_image
 
     # Render the candidate at the fitness scale
     src_img = x.draw(scale=scale).convert("RGB")
@@ -27,11 +33,11 @@ def score(x: VoronoiPainting) -> float:
 
     # Lazily prepare the scaled target (cached for all evaluations)
     if scale == 1.0:
-        tgt_np = np.array(x.target_image.convert("RGB"), dtype=np.float32)
+        tgt_np = np.array(target_image.convert("RGB"), dtype=np.float32)
     else:
         if "_SCALED_TARGET_NP" not in globals():
-            tgt = x.target_image.resize(
-                (int(x.target_image.width * scale), int(x.target_image.height * scale)),
+            tgt = target_image.resize(
+                (int(target_image.width * scale), int(target_image.height * scale)),
                 resample=Image.BILINEAR,
             ).convert("RGB")
             _SCALED_TARGET_NP = np.array(tgt, dtype=np.float32)
@@ -110,8 +116,11 @@ def print_summary(
         "\nCurrent generation %d, best score %f, pop. avg. %f. Chromosome length %d"
         % (pop.generation, pop.current_best.fitness, avg_fitness, chromosome_length)
     )
-    img = pop.current_best.chromosome.draw(scale=output_scale)
-    img.save(img_template % pop.generation, "PNG")
+
+    # Save only on generation 1 and every 50 generations thereafter
+    if pop.generation == 1 or (pop.generation % 50) == 0:
+        img = pop.current_best.chromosome.draw(scale=output_scale)
+        img.save(img_template % pop.generation, "PNG")
 
     if pop.generation % 50 == 0:
         pop.checkpoint(target=checkpoint_path, method="pickle")
@@ -328,6 +337,8 @@ if __name__ == "__main__":
     converted_img = target_image.convert(
         "P", palette=Image.ADAPTIVE, colors=initialColorCount
     )
+    global _SCORE_TARGET_IMAGE
+    _SCORE_TARGET_IMAGE = converted_img
     # converted_img.show()
     palette = converted_img.getpalette()[: initialColorCount * 3]  # Get the RGB values
     colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
