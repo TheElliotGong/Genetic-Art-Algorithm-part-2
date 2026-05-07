@@ -7,41 +7,50 @@ import random
 import os
 import cv2
 import numpy as np
-
+from multiprocessing import Pool
+from functools import partial
 
 from voronoi_painting import VoronoiPainting
+
+# Cache scaled targets per (target identity, size, scale) to avoid rebuilding arrays.
+_SCALED_TARGET_CACHE = {}
 
 
 def score(x: VoronoiPainting) -> float:
     # Approximate fitness: render at reduced scale and compute vectorized MSE
-    global FITNESS_SCALE, _SCALED_TARGET_NP, _SCORE_TARGET_IMAGE
+    global FITNESS_SCALE, _SCALED_TARGET_CACHE
     try:
         scale = FITNESS_SCALE
     except NameError:
         scale = float(os.getenv("FITNESS_SCALE", "1.0"))
         FITNESS_SCALE = scale
 
-    try:
-        target_image = _SCORE_TARGET_IMAGE
-    except NameError:
-        target_image = x.target_image
-        _SCORE_TARGET_IMAGE = target_image
+    target_image = x.target_image
 
     # Render the candidate at the fitness scale
     src_img = x.draw(scale=scale).convert("RGB")
     src_np = np.array(src_img, dtype=np.float32)
 
     # Lazily prepare the scaled target (cached for all evaluations)
-    if scale == 1.0:
-        tgt_np = np.array(target_image.convert("RGB"), dtype=np.float32)
-    else:
-        if "_SCALED_TARGET_NP" not in globals():
+    cache_key = (id(target_image), target_image.size, float(scale))
+    if cache_key not in _SCALED_TARGET_CACHE:
+        if scale == 1.0:
+            tgt = target_image.convert("RGB")
+        else:
             tgt = target_image.resize(
                 (int(target_image.width * scale), int(target_image.height * scale)),
                 resample=Image.BILINEAR,
             ).convert("RGB")
-            _SCALED_TARGET_NP = np.array(tgt, dtype=np.float32)
-        tgt_np = _SCALED_TARGET_NP
+        _SCALED_TARGET_CACHE[cache_key] = np.array(tgt, dtype=np.float32)
+    tgt_np = _SCALED_TARGET_CACHE[cache_key]
+
+    # Defensive resize when dimensions differ due to rounding.
+    if src_np.shape != tgt_np.shape:
+        src_h, src_w = src_np.shape[:2]
+        tgt_np = np.array(
+            target_image.resize((src_w, src_h), resample=Image.BILINEAR).convert("RGB"),
+            dtype=np.float32,
+        )
 
     # Mean squared error as fitness (lower is better)
     diff = src_np - tgt_np
@@ -315,60 +324,162 @@ def create_region_seeded_population(
     return chromosomes
 
 
-if __name__ == "__main__":
-    target_image_path = "./img/battleship.jpeg"
-    checkpoint_path = "./output/battleship"
-    image_template = os.path.join(checkpoint_path, "drawing_%05d.png")
-    target_image = Image.open(target_image_path).convert("RGBA")
+def split_image_into_grid(image: Image, rows=3, cols=3, overlap_pixels=20):
+    width, height = image.size
+    xs = [int(round(i * width / cols)) for i in range(cols + 1)]
+    ys = [int(round(i * height / rows)) for i in range(rows + 1)]
 
-    num_points = 250
-    population_size = 250
+    tiles = []
+    for row in range(rows):
+        for col in range(cols):
+            # Crop bounds for the actual tile (no overlap)
+            left, right = xs[col], xs[col + 1]
+            top, bottom = ys[row], ys[row + 1]
 
-    generation_scale = float(os.getenv("GENERATION_SCALE", "0.6"))
-    early_stop_window = int(os.getenv("EARLY_STOP_WINDOW", "200"))
-    min_improvement_ratio = float(os.getenv("MIN_IMPROVEMENT_RATIO", "0.01"))
-    output_scale = float(os.getenv("OUTPUT_SCALE", "2.0"))
+            # Expand bounds with overlap margin (clamped to image bounds)
+            expand_left = max(0, left - overlap_pixels) if col > 0 else left
+            expand_right = (
+                min(width, right + overlap_pixels) if col < cols - 1 else right
+            )
+            expand_top = max(0, top - overlap_pixels) if row > 0 else top
+            expand_bottom = (
+                min(height, bottom + overlap_pixels) if row < rows - 1 else bottom
+            )
 
+            expand_bbox = (expand_left, expand_top, expand_right, expand_bottom)
+            tiles.append(
+                {
+                    "row": row,
+                    "col": col,
+                    "bbox": (left, top, right, bottom),  # Core tile bounds (no overlap)
+                    "expand_bbox": expand_bbox,  # Expanded bounds for rendering
+                    "image": image.crop(expand_bbox).convert("RGBA"),
+                    "overlap_margins": {
+                        "left": left - expand_left,
+                        "top": top - expand_top,
+                        "right": expand_right - right,
+                        "bottom": expand_bottom - bottom,
+                    },
+                }
+            )
+    return tiles
+
+
+def feather_blend_tiles(
+    canvas, patch, top_left, overlap_margins, output_scale=1.0, feather_width=20
+):
+    """Blend patch onto canvas with feathering at overlap zones."""
+    x, y = top_left
+    h, w = patch.shape[:2]
+    roi = canvas[y : y + h, x : x + w].astype(np.float32)
+    src = patch.astype(np.float32)
+
+    # Create mask with soft edges at overlap zones
+    mask = np.ones((h, w), dtype=np.float32)
+
+    left_margin = int(overlap_margins.get("left", 0) * output_scale)
+    top_margin = int(overlap_margins.get("top", 0) * output_scale)
+    right_margin = int(overlap_margins.get("right", 0) * output_scale)
+    bottom_margin = int(overlap_margins.get("bottom", 0) * output_scale)
+
+    # Feather out at margins
+    if left_margin > 0:
+        for i in range(left_margin):
+            mask[:, i] *= i / max(1, left_margin)
+    if top_margin > 0:
+        for i in range(top_margin):
+            mask[i, :] *= i / max(1, top_margin)
+    if right_margin > 0:
+        for i in range(right_margin):
+            mask[:, -(i + 1)] *= i / max(1, right_margin)
+    if bottom_margin > 0:
+        for i in range(bottom_margin):
+            mask[-(i + 1), :] *= i / max(1, bottom_margin)
+
+    mask = np.expand_dims(mask, axis=2)
+    out = src * mask + roi * (1 - mask)
+    canvas[y : y + h, x : x + w] = np.clip(out, 0, 255).astype(np.uint8)
+    return canvas
+
+
+def stitch_tile_results(
+    tile_results, original_size, output_scale=1.0, use_feather_blend=True
+):
+    """Stitch tile results with optional feather blending at overlaps."""
+    full_width, full_height = original_size
+    canvas_cv = np.zeros(
+        (int(full_height * output_scale), int(full_width * output_scale), 4),
+        dtype=np.uint8,
+    )
+
+    # Sort tiles by row, col to paste in order
+    sorted_tiles = sorted(tile_results, key=lambda t: (t["row"], t["col"]))
+
+    for tile in sorted_tiles:
+        left, top, _, _ = tile["bbox"]
+        paste_x = int(round(left * output_scale))
+        paste_y = int(round(top * output_scale))
+
+        # Convert PIL RGBA to numpy BGRA for OpenCV
+        render_pil = tile["render"]
+        render_rgb = np.array(render_pil.convert("RGB"), dtype=np.uint8)
+        render_bgr = cv2.cvtColor(render_rgb, cv2.COLOR_RGB2BGR)
+
+        if use_feather_blend and ("overlap_margins" in tile):
+            # Add alpha channel for blending
+            render_bgra = cv2.cvtColor(render_bgr, cv2.COLOR_BGR2BGRA)
+            canvas_bgra = canvas_cv
+            feather_blend_tiles(
+                canvas_bgra,
+                render_bgra,
+                (paste_x, paste_y),
+                tile["overlap_margins"],
+                output_scale=output_scale,
+            )
+        else:
+            # Simple paste
+            h, w = render_bgr.shape[:2]
+            canvas_cv[paste_y : paste_y + h, paste_x : paste_x + w] = cv2.cvtColor(
+                render_bgr, cv2.COLOR_BGR2BGRA
+            )
+
+    # Convert back to PIL RGBA
+    canvas_bgr = cv2.cvtColor(canvas_cv, cv2.COLOR_BGRA2BGR)
+    canvas_rgb = cv2.cvtColor(canvas_bgr, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(canvas_rgb, "RGB")
+
+
+def run_evolution(
+    target_image,
+    checkpoint_path,
+    image_template,
+    num_points,
+    population_size,
+    generation_scale,
+    early_stop_window,
+    min_improvement_ratio,
+    output_scale,
+):
     initialColorCount = 60
     finalColorCount = 20
 
-    # Extract color palette from target image, we will use this palette to initialize the points with colors that are present in the target image, this will help the algorithm to converge faster
-    # palette = target_image.getcolors(maxcolors=1000)
+    # Extract palette and simplify colors for region-aware seeding.
     converted_img = target_image.convert(
         "P", palette=Image.ADAPTIVE, colors=initialColorCount
     )
-    global _SCORE_TARGET_IMAGE
-    _SCORE_TARGET_IMAGE = converted_img
-    # converted_img.show()
-    palette = converted_img.getpalette()[: initialColorCount * 3]  # Get the RGB values
+    palette = converted_img.getpalette()[: initialColorCount * 3]
     colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
-
-    # Visualize the color palette as a set of colored squares
-    palette_img = Image.new("RGB", (initialColorCount * 20, 20))
-    draw = ImageDraw.Draw(palette_img)
-    for i, color in enumerate(colors):
-        draw.rectangle([i * 20, 0, (i + 1) * 20, 20], fill=color)
-    # palette_img.show()
-    # Condense the palette and visualize the condensed colors
     condensed_colors = simplify_palette(colors, finalColorCount)
     print(f"Original colors: {len(colors)}, Condensed colors: {len(condensed_colors)}")
-    palette_img = Image.new("RGB", (finalColorCount * 20, 20))
-    draw = ImageDraw.Draw(palette_img)
-    for i, color in enumerate(condensed_colors):
-        draw.rectangle([i * 20, 0, (i + 1) * 20, 20], fill=color)
-    # palette_img.show()
 
-    # Use Canny edges as hard separators between regions.
+    # Use Canny edges as separators between color-texture regions.
     target_rgb = np.array(target_image.convert("RGB"))
     edges = feature.canny(cv2.cvtColor(target_rgb, cv2.COLOR_RGB2GRAY), sigma=1.2)
-
-    # Group pixels by both palette color and local texture, while avoiding edge boundaries.
     region_groups = build_region_groups(target_rgb, condensed_colors, edges)
     print(
         f"Detected {len(region_groups)} color-texture regions for seeded initialization"
     )
 
-    # Initialize population with region-aware points/colors to improve early convergence.
     seeded_chromosomes = create_region_seeded_population(
         population_size,
         num_points,
@@ -385,12 +496,6 @@ if __name__ == "__main__":
         maximize=False,
         concurrent_workers=6,
     )
-
-    # Code to load a pickled/stored version, each 50 generation the population is written to disk
-    # stored_pop = Population.load('./output/20200207-223736.187164.pkl', eval_function=score, maximize=False)
-    # # Create new population from stored one, trick to get multiprocessing working after
-    # pop = Population(chromosomes=[deepcopy(a) for a in stored_pop.chromosomes],
-    #                  eval_function=score, maximize=False, concurrent_workers=4, generation=4550)
 
     print(f"Staring with {pop.concurrent_workers} workers")
 
@@ -505,7 +610,6 @@ if __name__ == "__main__":
         f"output-scale={output_scale}"
     )
 
-    # 250 points
     pop = evolve_phase_with_early_stop(
         pop,
         evo_step_1,
@@ -515,7 +619,6 @@ if __name__ == "__main__":
         min_improvement_ratio=min_improvement_ratio,
     )
     pop = pop.evolve(genome_duplication, n=1)
-    # 500 points
     pop = evolve_phase_with_early_stop(
         pop,
         evo_step_1,
@@ -526,7 +629,6 @@ if __name__ == "__main__":
     )
     pop = pop.evolve(shrink_step, n=shrink_generations)
     pop = pop.evolve(genome_duplication, n=1)
-    # 800 points
     pop = evolve_phase_with_early_stop(
         pop,
         evo_step_2,
@@ -553,3 +655,143 @@ if __name__ == "__main__":
         improvement_window=early_stop_window,
         min_improvement_ratio=min_improvement_ratio,
     )
+
+    return pop.current_best.chromosome.draw(scale=output_scale)
+
+
+def evolve_tile_worker(tile_spec):
+    """Worker function for parallel tile evolution. Returns tile with evolved render."""
+    tile = tile_spec["tile"]
+    args = tile_spec["args"]
+
+    row, col = tile["row"], tile["col"]
+    checkpoint_path = args["checkpoint_path"]
+
+    tile_checkpoint_path = os.path.join(checkpoint_path, f"tile_r{row}_c{col}")
+    os.makedirs(tile_checkpoint_path, exist_ok=True)
+    tile_template = os.path.join(tile_checkpoint_path, "drawing_%05d.png")
+
+    print(f"[Worker] Starting tile ({row}, {col}) with size={tile['image'].size}")
+
+    best_tile_render = run_evolution(
+        target_image=tile["image"],
+        checkpoint_path=tile_checkpoint_path,
+        image_template=tile_template,
+        num_points=args["num_points"],
+        population_size=args["population_size"],
+        generation_scale=args["generation_scale"],
+        early_stop_window=args["early_stop_window"],
+        min_improvement_ratio=args["min_improvement_ratio"],
+        output_scale=args["output_scale"],
+    )
+
+    print(f"[Worker] Finished tile ({row}, {col})")
+
+    return {
+        "row": row,
+        "col": col,
+        "bbox": tile["bbox"],
+        "overlap_margins": tile.get("overlap_margins", {}),
+        "render": best_tile_render,
+    }
+
+
+if __name__ == "__main__":
+    target_image_path = "./img/girl_half.jpg"
+    checkpoint_path = "./output/girl"
+    os.makedirs(checkpoint_path, exist_ok=True)
+    image_template = os.path.join(checkpoint_path, "drawing_%05d.png")
+    target_image = Image.open(target_image_path).convert("RGBA")
+
+    num_points = 250
+    population_size = 250
+
+    generation_scale = float(os.getenv("GENERATION_SCALE", "0.6"))
+    early_stop_window = int(os.getenv("EARLY_STOP_WINDOW", "200"))
+    min_improvement_ratio = float(os.getenv("MIN_IMPROVEMENT_RATIO", "0.01"))
+    output_scale = float(os.getenv("OUTPUT_SCALE", "2.0"))
+    use_divide_and_conquer = os.getenv(
+        "USE_DIVIDE_AND_CONQUER", "0"
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+    if use_divide_and_conquer:
+        grid_rows = int(os.getenv("GRID_ROWS", "3"))
+        grid_cols = int(os.getenv("GRID_COLS", "3"))
+        tile_points = int(
+            os.getenv(
+                "TILE_NUM_POINTS",
+                str(max(25, int(round(num_points / max(1, grid_rows * grid_cols))))),
+            )
+        )
+        tile_population_size = int(
+            os.getenv("TILE_POPULATION_SIZE", str(population_size))
+        )
+        tile_generation_scale = float(
+            os.getenv("TILE_GENERATION_SCALE", str(generation_scale))
+        )
+        overlap_pixels = int(os.getenv("TILE_OVERLAP_PIXELS", "20"))
+        num_workers = int(os.getenv("NUM_WORKERS", "6"))
+        use_feather_blend = os.getenv("USE_FEATHER_BLEND", "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        print(
+            "Running divide-and-conquer evolution: "
+            f"grid={grid_rows}x{grid_cols}, tile_points={tile_points}, "
+            f"tile_population_size={tile_population_size}, tile_generation_scale={tile_generation_scale}, "
+            f"overlap_pixels={overlap_pixels}, num_workers={num_workers}, use_feather_blend={use_feather_blend}"
+        )
+
+        tiles = split_image_into_grid(
+            target_image, rows=grid_rows, cols=grid_cols, overlap_pixels=overlap_pixels
+        )
+
+        # Prepare worker args
+        worker_args = {
+            "checkpoint_path": checkpoint_path,
+            "num_points": tile_points,
+            "population_size": tile_population_size,
+            "generation_scale": tile_generation_scale,
+            "early_stop_window": early_stop_window,
+            "min_improvement_ratio": min_improvement_ratio,
+            "output_scale": output_scale,
+        }
+
+        # Create worker task specs
+        worker_tasks = [{"tile": tile, "args": worker_args} for tile in tiles]
+
+        # Run in parallel or sequentially
+        if num_workers > 1:
+            print(
+                f"Evolving {len(tiles)} tiles in parallel with {num_workers} workers..."
+            )
+            with Pool(processes=num_workers) as pool:
+                tile_results = pool.map(evolve_tile_worker, worker_tasks)
+        else:
+            print(f"Evolving {len(tiles)} tiles sequentially...")
+            tile_results = [evolve_tile_worker(task) for task in worker_tasks]
+
+        stitched = stitch_tile_results(
+            tile_results,
+            original_size=target_image.size,
+            output_scale=output_scale,
+            use_feather_blend=use_feather_blend,
+        )
+        stitched_path = os.path.join(checkpoint_path, "drawing_divide_and_conquer.png")
+        stitched.save(stitched_path, "PNG")
+        print(f"Saved stitched divide-and-conquer result to {stitched_path}")
+    else:
+        run_evolution(
+            target_image=target_image,
+            checkpoint_path=checkpoint_path,
+            image_template=image_template,
+            num_points=num_points,
+            population_size=population_size,
+            generation_scale=generation_scale,
+            early_stop_window=early_stop_window,
+            min_improvement_ratio=min_improvement_ratio,
+            output_scale=output_scale,
+        )
