@@ -1,7 +1,7 @@
 from random import shuffle, randint, choices, choice
-from PIL import Image, ImageDraw
-from imgcompare import image_diff
-from scipy.spatial import Voronoi
+from PIL import Image
+import numpy as np
+import cv2
 
 
 class ColoredPoint:
@@ -78,36 +78,30 @@ class VoronoiPainting:
         """
         self.points.pop(randint(0, self.num_points-1))
 
+    def _render_array(self, scale=1) -> np.ndarray:
+        w = self._img_width * scale
+        h = self._img_height * scale
+
+        coords = np.array([p.coordinates for p in self.points], dtype=np.int32) * scale
+        xs = np.clip(coords[:, 0], 0, w - 1)
+        ys = np.clip(coords[:, 1], 0, h - 1)
+
+        binary = np.full((h, w), 255, dtype=np.uint8)
+        binary[ys, xs] = 0
+
+        _, labels = cv2.distanceTransformWithLabels(
+            binary, cv2.DIST_L2, 3, labelType=cv2.DIST_LABEL_PIXEL
+        )
+
+        colors = np.array([p.color[:3] for p in self.points], dtype=np.uint8)
+        seed_labels = labels[ys, xs]
+        lut = np.zeros((int(labels.max()) + 1, 3), dtype=np.uint8)
+        lut[seed_labels] = colors
+
+        return lut[labels]
+
     def draw(self, scale=1) -> Image:
-        image = Image.new("RGBA", (self._img_width*scale, self._img_height*scale))
-        draw = ImageDraw.Draw(image)
-
-        if not hasattr(self, '_background_color'):
-            self._background_color = (0, 0, 0, 255)
-
-        draw.polygon([(0, 0), (0, self._img_height*scale), (self._img_width*scale, self._img_height*scale), (self._img_width*scale, 0)],
-                     fill=self._background_color)
-
-        vor = Voronoi([p.coordinates for p in self.points], qhull_options="Qc")
-
-        for point, region_idx in zip(self.points, vor.point_region):
-            polygon = []
-            draw = True
-            for vertex_idx in vor.regions[region_idx]:
-                if vertex_idx == -1:
-                    draw = False
-                i, j = vor.vertices[vertex_idx]
-                # if i < 0 or j < 0 or i > self._img_width or j > self._img_height:
-                #     draw = False
-                polygon.append((i*scale, j*scale))
-
-            if draw:
-                new_polygon = Image.new("RGBA", (self._img_width * scale, self._img_height * scale))
-                pdraw = ImageDraw.Draw(new_polygon)
-                pdraw.polygon(polygon, fill=point.color)
-                image = Image.alpha_composite(image, new_polygon)
-
-        return image
+        return Image.fromarray(self._render_array(scale=scale), mode="RGB")
 
     @staticmethod
     def _mate_possible(a, b) -> bool:
@@ -155,7 +149,9 @@ class VoronoiPainting:
         return merger
 
     def image_diff(self, target: Image) -> float:
-        source = self.draw()
+        if not hasattr(self, "_target_np") or self._target_np is None:
+            self._target_np = np.array(target.convert("RGB"), dtype=np.uint8)
 
-        return image_diff(source, target)
+        source = self._render_array()
+        return cv2.norm(source, self._target_np, cv2.NORM_L1)
 

@@ -1,6 +1,7 @@
 from PIL import Image, ImageDraw, ImageFilter
 from evol import Evolution, Population
 from copy import deepcopy
+from datetime import datetime
 from skimage import feature
 
 import random
@@ -84,8 +85,9 @@ def print_summary(
         "\nCurrent generation %d, best score %f, pop. avg. %f. Chromosome length %d"
         % (pop.generation, pop.current_best.fitness, avg_fitness, chromosome_length)
     )
-    img = pop.current_best.chromosome.draw(scale=3)
-    img.save(img_template % pop.generation, "PNG")
+    if pop.generation % 10 == 0:
+        img = pop.current_best.chromosome.draw(scale=3)
+        img.save(img_template % pop.generation, "PNG")
 
     if pop.generation % 50 == 0:
         pop.checkpoint(target=checkpoint_path, method="pickle")
@@ -236,8 +238,10 @@ def create_region_seeded_population(
 
 
 if __name__ == "__main__":
-    target_image_path = "./img/battleship.jpeg"
-    checkpoint_path = "./output/"
+    target_image_path = "./img/car.jpeg"
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    checkpoint_path = os.path.join("./output", run_id)
+    os.makedirs(checkpoint_path, exist_ok=True)
     image_template = os.path.join(checkpoint_path, "drawing_%05d.png")
     target_image = Image.open(target_image_path).convert("RGBA")
 
