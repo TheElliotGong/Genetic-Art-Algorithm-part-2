@@ -41,7 +41,13 @@ class ColoredPoint:
 
 class VoronoiPainting:
     def __init__(
-        self, num_points, target_image, background_color=(0, 0, 0), output_scale=1.0
+        self,
+        num_points,
+        target_image,
+        background_color=(0, 0, 0),
+        output_scale=1.0,
+        outline_width=0,
+        outline_color=(0, 0, 0),
     ):
         self._img_width, self._img_height = target_image.size
         self.points = [
@@ -50,6 +56,12 @@ class VoronoiPainting:
         self._background_color = (*background_color, 255)
         self.target_image = target_image
         self._output_scale = output_scale
+        self._outline_width = outline_width
+        self._outline_color = (
+            (*outline_color, 255)
+            if isinstance(outline_color, tuple) and len(outline_color) == 3
+            else (0, 0, 0, 255)
+        )
         # Render cache keyed by scale -> PIL Image
         self._render_cache = {}
         # Dirty flag indicates cached renders are stale
@@ -70,6 +82,14 @@ class VoronoiPainting:
     @property
     def get_output_scale(self):
         return self._output_scale
+
+    @property
+    def get_outline_width(self):
+        return self._outline_width
+
+    @property
+    def get_outline_color(self):
+        return self._outline_color[:3]
 
     @property
     def num_points(self):
@@ -126,18 +146,21 @@ class VoronoiPainting:
 
         vor = Voronoi([p.coordinates for p in self.points], qhull_options="Qc")
 
+        # Store polygons for outline drawing later if outlines are enabled
+        outline_polygons = [] if getattr(self, "_outline_width", 0) > 0 else None
+
         for point, region_idx in zip(self.points, vor.point_region):
             polygon = []
-            draw = True
+            draw_region = True
             for vertex_idx in vor.regions[region_idx]:
                 if vertex_idx == -1:
-                    draw = False
+                    draw_region = False
                 i, j = vor.vertices[vertex_idx]
                 # if i < 0 or j < 0 or i > self._img_width or j > self._img_height:
                 #     draw = False
                 polygon.append((i * scale, j * scale))
 
-            if draw:
+            if draw_region:
                 new_polygon = Image.new(
                     "RGBA",
                     (int(self._img_width * scale), int(self._img_height * scale)),
@@ -145,6 +168,30 @@ class VoronoiPainting:
                 pdraw = ImageDraw.Draw(new_polygon)
                 pdraw.polygon(polygon, fill=point.color)
                 image = Image.alpha_composite(image, new_polygon)
+
+                # Store polygon for outline drawing
+                if outline_polygons is not None:
+                    outline_polygons.append(polygon)
+
+        # Draw outlines around Voronoi regions if enabled
+        if outline_polygons is not None and getattr(self, "_outline_width", 0) > 0:
+            outline_draw = ImageDraw.Draw(image)
+            outline_color = getattr(self, "_outline_color", (0, 0, 0, 255))
+            outline_width = int(getattr(self, "_outline_width", 0) * scale)
+
+            if outline_width > 0:
+                for polygon in outline_polygons:
+                    # Close the polygon if it's not already closed
+                    if len(polygon) > 0 and polygon[0] != polygon[-1]:
+                        closed_polygon = polygon + [polygon[0]]
+                    else:
+                        closed_polygon = polygon
+
+                    # Draw the outline
+                    if len(closed_polygon) > 1:
+                        outline_draw.line(
+                            closed_polygon, fill=outline_color, width=outline_width
+                        )
 
         # Cache rendered result and mark clean
         try:
@@ -164,6 +211,8 @@ class VoronoiPainting:
                 a.get_img_width == b.get_img_width,
                 a.get_img_height == b.get_img_height,
                 a.get_output_scale == b.get_output_scale,
+                a.get_outline_width == b.get_outline_width,
+                a.get_outline_color == b.get_outline_color,
             ]
         )
 
@@ -184,12 +233,16 @@ class VoronoiPainting:
             a.target_image,
             background_color=new_background,
             output_scale=a.get_output_scale,
+            outline_width=a.get_outline_width,
+            outline_color=a.get_outline_color,
         )
         child_b = VoronoiPainting(
             0,
             a.target_image,
             background_color=new_background,
             output_scale=a.get_output_scale,
+            outline_width=a.get_outline_width,
+            outline_color=a.get_outline_color,
         )
 
         for point_a, point_b in zip(a.points, b.points):
@@ -219,6 +272,8 @@ class VoronoiPainting:
             a.target_image,
             background_color=new_background,
             output_scale=a.get_output_scale,
+            outline_width=a.get_outline_width,
+            outline_color=a.get_outline_color,
         )
 
         for point_a, point_b in zip(a.points, b.points):

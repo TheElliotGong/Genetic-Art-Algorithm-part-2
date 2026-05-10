@@ -12,6 +12,23 @@ from functools import partial
 
 from voronoi_painting import VoronoiPainting
 
+# ============================================================================
+# Complexity Weighting Configuration (tunable parameters)
+# ============================================================================
+# Controls how regions and tiles are prioritized based on edges and color variety.
+# These can be overridden via environment variables.
+
+# Region complexity weights (used in build_region_groups)
+REGION_EDGE_MULTIPLIER = float(os.getenv("REGION_EDGE_MULTIPLIER", "4.0"))
+REGION_COLOR_VARIANCE_SCALE = float(os.getenv("REGION_COLOR_VARIANCE_SCALE", "1024.0"))
+
+# Tile complexity weights (used in allocate_points_to_tiles)
+TILE_EDGE_MULTIPLIER = float(os.getenv("TILE_EDGE_MULTIPLIER", "2.0"))
+TILE_COLOR_VARIANCE_SCALE = float(os.getenv("TILE_COLOR_VARIANCE_SCALE", "256.0"))
+TILE_MIN_POINTS = int(os.getenv("TILE_MIN_POINTS", "25"))
+
+# ============================================================================
+
 # Cache scaled targets per (target identity, size, scale) to avoid rebuilding arrays.
 _SCALED_TARGET_CACHE = {}
 
@@ -251,12 +268,32 @@ def build_region_groups(rgb_image, palette, edges, texture_bins=4, min_area=40):
             dominant_color = tuple(
                 int(v) for v in np.median(rgb_image[ys, xs], axis=0).astype(np.uint8)
             )
+            # Compute edge density and color variance as complexity signals
+            edge_count = int(np.sum(edges[ys, xs])) if edges is not None else 0
+            edge_density = float(edge_count) / float(max(1, area))
+            color_var = float(
+                np.mean(np.var(rgb_image[ys, xs].astype(np.float32), axis=0))
+            )
+
+            # Combine signals into a relative weight using configuration parameters
+            # - edge_density is emphasized to encourage more sites near strong edges
+            # - color_var contributes to capturing color detail
+            weight = area * (
+                1.0
+                + edge_density * REGION_EDGE_MULTIPLIER
+                + (color_var / REGION_COLOR_VARIANCE_SCALE)
+            )
+
             regions.append(
                 {
                     "x": xs,
                     "y": ys,
                     "area": area,
                     "color": dominant_color,
+                    "edge_count": edge_count,
+                    "edge_density": edge_density,
+                    "color_var": color_var,
+                    "weight": weight,
                 }
             )
 
@@ -287,9 +324,12 @@ def create_region_seeded_population(
     fallback_palette,
     region_bias=0.8,
     output_scale=1.0,
+    outline_width=0,
+    outline_color=(0, 0, 0),
 ):
-    weighted_regions = [r for r in region_groups if r["area"] > 0]
-    weights = [r["area"] for r in weighted_regions]
+    # Prefer region 'weight' if available (computed from area, edge density, color variance)
+    weighted_regions = [r for r in region_groups if r.get("area", 0) > 0]
+    weights = [r.get("weight", r.get("area", 1)) for r in weighted_regions]
 
     chromosomes = []
     for _ in range(population_size):
@@ -298,6 +338,8 @@ def create_region_seeded_population(
             target_image,
             background_color=(128, 128, 128),
             output_scale=output_scale,
+            outline_width=outline_width,
+            outline_color=outline_color,
         )
 
         for point in painting.points:
@@ -363,6 +405,63 @@ def split_image_into_grid(image: Image, rows=3, cols=3, overlap_pixels=20):
                 }
             )
     return tiles
+
+
+def allocate_points_to_tiles(tiles, total_points, min_points=None):
+    """Allocate integer number of points to each tile based on edge + color complexity.
+
+    Args:
+        tiles: list of tile dicts with 'image' keys
+        total_points: total Voronoi sites to distribute
+        min_points: minimum points per tile (defaults to TILE_MIN_POINTS config)
+    """
+    if min_points is None:
+        min_points = TILE_MIN_POINTS
+    complexities = []
+    for tile in tiles:
+        img = tile["image"].convert("RGB")
+        rgb = np.array(img)
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+        # Edge signal (Canny-based count)
+        edges = feature.canny(gray, sigma=1.0)
+        edge_count = float(edges.sum())
+
+        # Color variance signal
+        color_var = float(np.mean(np.var(rgb.astype(np.float32), axis=2)))
+
+        # combine signals using tile configuration
+        complexity = edge_count * TILE_EDGE_MULTIPLIER + (
+            color_var / TILE_COLOR_VARIANCE_SCALE
+        )
+        complexities.append(max(0.0, complexity))
+
+    total_complexity = sum(complexities)
+    if total_complexity <= 0:
+        # fallback: evenly distribute
+        base = max(min_points, int(round(total_points / max(1, len(tiles)))))
+        return [base for _ in tiles]
+
+    raw_alloc = [c / total_complexity * total_points for c in complexities]
+    alloc = [max(min_points, int(round(x))) for x in raw_alloc]
+
+    # Adjust to match total_points exactly by adding/removing from largest tiles
+    current = sum(alloc)
+    idx_order = sorted(range(len(alloc)), key=lambda i: raw_alloc[i], reverse=True)
+    i = 0
+    while current != total_points:
+        if current < total_points:
+            alloc[idx_order[i % len(alloc)]] += 1
+            current += 1
+        else:
+            # avoid dropping below min_points
+            j = idx_order[i % len(alloc)]
+            if alloc[j] > min_points:
+                alloc[j] -= 1
+                current -= 1
+        i += 1
+
+    return alloc
 
 
 def feather_blend_tiles(
@@ -459,9 +558,11 @@ def run_evolution(
     early_stop_window,
     min_improvement_ratio,
     output_scale,
+    outline_width=0,
+    outline_color=(0, 0, 0),
 ):
     initialColorCount = 60
-    finalColorCount = 20
+    finalColorCount = 24
 
     # Extract palette and simplify colors for region-aware seeding.
     converted_img = target_image.convert(
@@ -488,6 +589,8 @@ def run_evolution(
         condensed_colors,
         region_bias=0.85,
         output_scale=output_scale,
+        outline_width=outline_width,
+        outline_color=outline_color,
     )
 
     pop = Population(
@@ -683,6 +786,8 @@ def evolve_tile_worker(tile_spec):
         early_stop_window=args["early_stop_window"],
         min_improvement_ratio=args["min_improvement_ratio"],
         output_scale=args["output_scale"],
+        outline_width=args["outline_width"],
+        outline_color=args["outline_color"],
     )
 
     print(f"[Worker] Finished tile ({row}, {col})")
@@ -703,13 +808,28 @@ if __name__ == "__main__":
     image_template = os.path.join(checkpoint_path, "drawing_%05d.png")
     target_image = Image.open(target_image_path).convert("RGBA")
 
-    num_points = 250
+    num_points = 450
     population_size = 250
 
     generation_scale = float(os.getenv("GENERATION_SCALE", "0.6"))
     early_stop_window = int(os.getenv("EARLY_STOP_WINDOW", "200"))
     min_improvement_ratio = float(os.getenv("MIN_IMPROVEMENT_RATIO", "0.01"))
     output_scale = float(os.getenv("OUTPUT_SCALE", "2.0"))
+
+    # Outline parameters
+    outline_width = int(os.getenv("OUTLINE_WIDTH", "0"))
+    outline_color_str = os.getenv("OUTLINE_COLOR", "0,0,0")
+    try:
+        outline_color = tuple(int(c.strip()) for c in outline_color_str.split(","))
+        if len(outline_color) != 3:
+            raise ValueError("Color must have exactly 3 components")
+        outline_color = tuple(min(max(c, 0), 255) for c in outline_color)
+    except (ValueError, AttributeError):
+        print(
+            f"Warning: Invalid OUTLINE_COLOR '{outline_color_str}', using default (0,0,0)"
+        )
+        outline_color = (0, 0, 0)
+
     use_divide_and_conquer = os.getenv(
         "USE_DIVIDE_AND_CONQUER", "0"
     ).strip().lower() in ("1", "true", "yes", "on")
@@ -749,19 +869,25 @@ if __name__ == "__main__":
             target_image, rows=grid_rows, cols=grid_cols, overlap_pixels=overlap_pixels
         )
 
-        # Prepare worker args
-        worker_args = {
-            "checkpoint_path": checkpoint_path,
-            "num_points": tile_points,
-            "population_size": tile_population_size,
-            "generation_scale": tile_generation_scale,
-            "early_stop_window": early_stop_window,
-            "min_improvement_ratio": min_improvement_ratio,
-            "output_scale": output_scale,
-        }
+        # Allocate points to tiles based on local complexity (edges + color variance)
+        per_tile_points = allocate_points_to_tiles(tiles, total_points=num_points)
 
-        # Create worker task specs
-        worker_tasks = [{"tile": tile, "args": worker_args} for tile in tiles]
+        # Create worker task specs with per-tile args
+        worker_tasks = []
+        for tile_idx, tile in enumerate(tiles):
+            tile_num_points = per_tile_points[tile_idx]
+            worker_args = {
+                "checkpoint_path": checkpoint_path,
+                "num_points": tile_num_points,
+                "population_size": tile_population_size,
+                "generation_scale": tile_generation_scale,
+                "early_stop_window": early_stop_window,
+                "min_improvement_ratio": min_improvement_ratio,
+                "output_scale": output_scale,
+                "outline_width": outline_width,
+                "outline_color": outline_color,
+            }
+            worker_tasks.append({"tile": tile, "args": worker_args})
 
         # Run in parallel or sequentially
         if num_workers > 1:
@@ -794,4 +920,6 @@ if __name__ == "__main__":
             early_stop_window=early_stop_window,
             min_improvement_ratio=min_improvement_ratio,
             output_scale=output_scale,
+            outline_width=outline_width,
+            outline_color=outline_color,
         )
