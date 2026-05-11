@@ -123,7 +123,7 @@ def evolve_tile(
     pop = pop.evolve(duplication, n=1)
     pop = pop.evolve(evo_step_2, n=gens_phase2)
 
-    final_img = pop.current_best.chromosome.draw(scale=1)
+    final_img = pop.current_best.chromosome.draw_lines(scale=1, line_width=1)
     final_img.save(img_template % pop.generation, "PNG")
 
     return pop.current_best.chromosome
@@ -132,13 +132,13 @@ def evolve_tile(
 def stitch(tile_results, full_size):
     canvas = Image.new("RGB", full_size, (0, 0, 0))
     for x_offset, y_offset, painting in tile_results:
-        tile_img = painting.draw(scale=1).convert("RGB")
+        tile_img = painting.draw_lines(scale=1, line_width=1).convert("RGB")
         canvas.paste(tile_img, (x_offset, y_offset))
     return canvas
 
 
 if __name__ == "__main__":
-    target_image_path = "./img/car.jpeg"
+    target_image_path = "./img/girl_with_pearl_earring.jpg"
     target_image = Image.open(target_image_path).convert("RGBA")
 
     n_rows, n_cols = 3, 3

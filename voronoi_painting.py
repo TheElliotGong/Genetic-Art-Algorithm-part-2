@@ -102,6 +102,46 @@ class VoronoiPainting:
 
     def draw(self, scale=1) -> Image:
         return Image.fromarray(self._render_array(scale=scale), mode="RGB")
+    
+    def _render_array_with_lines(self, scale=1, line_width=2) -> np.ndarray:
+        w = self._img_width * scale
+        h = self._img_height * scale
+
+        coords = np.array([p.coordinates for p in self.points], dtype=np.int32) * scale
+        xs = np.clip(coords[:, 0], 0, w - 1)
+        ys = np.clip(coords[:, 1], 0, h - 1)
+
+        binary = np.full((h, w), 255, dtype=np.uint8)
+        binary[ys, xs] = 0
+
+        _, labels = cv2.distanceTransformWithLabels(
+            binary, cv2.DIST_L2, 3, labelType=cv2.DIST_LABEL_PIXEL
+        )
+
+        colors = np.array([p.color[:3] for p in self.points], dtype=np.uint8)
+        seed_labels = labels[ys, xs]
+        lut = np.zeros((int(labels.max()) + 1, 3), dtype=np.uint8)
+        lut[seed_labels] = colors
+
+        result = lut[labels]
+
+        label_u = np.roll(labels, -1, axis=0)
+        label_d = np.roll(labels,  1, axis=0)
+        label_l = np.roll(labels, -1, axis=1)
+        label_r = np.roll(labels,  1, axis=1)
+
+        is_edge = ((labels != label_u) | (labels != label_d) | (labels != label_l) | (labels != label_r))
+        
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (line_width * 2 - 1, line_width * 2 - 1))
+        is_edge = cv2.dilate(is_edge.astype(np.uint8), kernel).astype(bool)
+
+        result[is_edge] = 0
+
+        return result
+    
+    def draw_lines(self, scale=1, line_width=2) -> Image:
+        return Image.fromarray(self._render_array_with_lines(scale=scale, line_width=line_width), mode="RGB")
+
 
     @staticmethod
     def _mate_possible(a, b) -> bool:
