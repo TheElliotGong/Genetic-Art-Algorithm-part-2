@@ -20,7 +20,7 @@ from evolve_voronoi import (
 )
 
 
-def split_into_tiles(target_image, n_rows=3, n_cols=3):
+def split_into_tiles(target_image, n_rows=3, n_cols=3, overlap_pixels=16):
     w, h = target_image.size
     col_edges = [(w * i) // n_cols for i in range(n_cols + 1)]
     row_edges = [(h * i) // n_rows for i in range(n_rows + 1)]
@@ -29,8 +29,26 @@ def split_into_tiles(target_image, n_rows=3, n_cols=3):
         for tx in range(n_cols):
             x0, x1 = col_edges[tx], col_edges[tx + 1]
             y0, y1 = row_edges[ty], row_edges[ty + 1]
-            tile = target_image.crop((x0, y0, x1, y1))
-            tiles.append((x0, y0, tile))
+            expanded_x0 = max(0, x0 - overlap_pixels)
+            expanded_y0 = max(0, y0 - overlap_pixels)
+            expanded_x1 = min(w, x1 + overlap_pixels)
+            expanded_y1 = min(h, y1 + overlap_pixels)
+
+            tile = target_image.crop(
+                (expanded_x0, expanded_y0, expanded_x1, expanded_y1)
+            )
+            tiles.append(
+                {
+                    "core_box": (x0, y0, x1, y1),
+                    "expanded_box": (
+                        expanded_x0,
+                        expanded_y0,
+                        expanded_x1,
+                        expanded_y1,
+                    ),
+                    "tile": tile,
+                }
+            )
     return tiles
 
 
@@ -48,7 +66,9 @@ def evolve_tile(
 
     initial_color_count = 30
     final_color_count = 12
-    converted = target_tile.convert("P", palette=Image.ADAPTIVE, colors=initial_color_count)
+    converted = target_tile.convert(
+        "P", palette=Image.ADAPTIVE, colors=initial_color_count
+    )
     palette = converted.getpalette()[: initial_color_count * 3]
     colors = [tuple(palette[i : i + 3]) for i in range(0, len(palette), 3)]
     condensed = simplify_palette(colors, final_color_count)
@@ -95,7 +115,11 @@ def evolve_tile(
     evo_step_1 = (
         Evolution()
         .survive(fraction=0.025)
-        .breed(parent_picker=pick_best_and_random, combiner=mate, population_size=population_size)
+        .breed(
+            parent_picker=pick_best_and_random,
+            combiner=mate,
+            population_size=population_size,
+        )
         .mutate(mutate_function=mutate_painting, rate=0.05, sigma=0.5)
         .evaluate(lazy=False)
         .callback(tile_callback)
@@ -104,7 +128,11 @@ def evolve_tile(
     duplication = (
         Evolution()
         .survive(fraction=0.025)
-        .breed(parent_picker=pick_best_and_random, combiner=merge, population_size=population_size)
+        .breed(
+            parent_picker=pick_best_and_random,
+            combiner=merge,
+            population_size=population_size,
+        )
         .mutate(mutate_function=mutate_painting, rate=0.05, sigma=0.5)
         .evaluate(lazy=False)
         .callback(tile_callback)
@@ -113,7 +141,11 @@ def evolve_tile(
     evo_step_2 = (
         Evolution()
         .survive(fraction=0.025)
-        .breed(parent_picker=pick_best_and_random, combiner=mate, population_size=population_size)
+        .breed(
+            parent_picker=pick_best_and_random,
+            combiner=mate,
+            population_size=population_size,
+        )
         .mutate(mutate_function=mutate_painting, rate=0.03, sigma=0.4)
         .evaluate(lazy=False)
         .callback(tile_callback)
@@ -131,33 +163,50 @@ def evolve_tile(
 
 def stitch(tile_results, full_size):
     canvas = Image.new("RGB", full_size, (0, 0, 0))
-    for x_offset, y_offset, painting in tile_results:
+    for tile_result in tile_results:
+        core_x0, core_y0, core_x1, core_y1 = tile_result["core_box"]
+        expanded_x0, expanded_y0, _, _ = tile_result["expanded_box"]
+        painting = tile_result["painting"]
+
         tile_img = painting.draw_lines(scale=1, line_width=1).convert("RGB")
-        canvas.paste(tile_img, (x_offset, y_offset))
+        crop_left = core_x0 - expanded_x0
+        crop_top = core_y0 - expanded_y0
+        crop_right = crop_left + (core_x1 - core_x0)
+        crop_bottom = crop_top + (core_y1 - core_y0)
+        core_img = tile_img.crop((crop_left, crop_top, crop_right, crop_bottom))
+        canvas.paste(core_img, (core_x0, core_y0))
     return canvas
 
 
 if __name__ == "__main__":
-    target_image_path = "./img/girl_with_pearl_earring.jpg"
+    target_image_path = "./img/car.jpeg"
     target_image = Image.open(target_image_path).convert("RGBA")
 
     n_rows, n_cols = 3, 3
-    tiles = split_into_tiles(target_image, n_rows, n_cols)
+    overlap_pixels = 16
+    tiles = split_into_tiles(
+        target_image, n_rows, n_cols, overlap_pixels=overlap_pixels
+    )
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    output_dir = os.path.join("./output", f"tiled-{run_id}")
+    output_dir = os.path.join("./output/car/", f"tiled-{run_id}")
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Target: {target_image.size}")
-    print(f"Splitting into {n_rows}x{n_cols} = {len(tiles)} tiles")
+    print(
+        f"Splitting into {n_rows}x{n_cols} = {len(tiles)} tiles "
+        f"with {overlap_pixels}px overlap"
+    )
     print(f"Output: {output_dir}\n")
 
     target_image.save(os.path.join(output_dir, "_target.png"))
 
     tile_results = []
     start = datetime.now()
-    for i, (x_offset, y_offset, tile) in enumerate(tiles):
+    for i, tile_info in enumerate(tiles):
         tile_id = f"{i:02d}"
+        x_offset, y_offset, _, _ = tile_info["core_box"]
+        tile = tile_info["tile"]
         print(
             f"=== Tile {i + 1}/{len(tiles)} (id {tile_id}) "
             f"at ({x_offset},{y_offset}), size {tile.size} ==="
@@ -169,11 +218,11 @@ if __name__ == "__main__":
             output_dir=output_dir,
             points_initial=50,
             population_size=100,
-            workers=4,
+            workers=8,
             gens_phase1=999,
             gens_phase2=1000,
         )
-        tile_results.append((x_offset, y_offset, best))
+        tile_results.append({**tile_info, "painting": best})
         elapsed = (datetime.now() - tile_start).total_seconds()
         print(f"  [Tile {tile_id}] done in {elapsed:.0f}s\n")
 

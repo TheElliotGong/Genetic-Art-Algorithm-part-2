@@ -5,3 +5,4 @@ opencv-python
 Pillow
 scikit-image
 scipy
+OpenCV
