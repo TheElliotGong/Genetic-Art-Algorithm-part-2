@@ -1,22 +1,10 @@
-# Genetic Art Algorithm - Part 2
+# Stained Glass Genetic Art Algorithm - Revised
 
-To cope with some issues the previous version had I tried a different approach using Voronoi diagrams/partitions/cells. 
-This allows points to be duplicated (which initially doesn't have an effect) and removed more easily. This allows some
-new evolutionary steps that mimic biology (like whole genome duplications). You can see the progression from the 1 
-generation to generation 5000 below. Between the later images there usually is a duplication step, followed by a number
-of normal evolutionary steps, followed by a reduction step. 
-
-![Evolving Cells into Girl with a Pearl Earring](./vermeer_evolution.png)
-
-The final result after 5600 generations you can check out below
-
-![Final result after 5600 generations](./vermeer_generation_05600.png)
-
-Note that running this code will take a long time, running 5000 generations took several days to complete on my machine.
+This project is forked from Sebastian Proost's Voronoi-based Genetic Art Algorithm. We added image pre-processing, Voronoi shape outlining, and a divide-and-conquer approach.
 
 ## Running the code
 
-To run the code in this repository clone it, set up a virtual environment and install the required packages from 
+To run the code in this repository, clone it, set up a virtual environment and install the required packages from 
 requirements.txt
 
 ```bash
