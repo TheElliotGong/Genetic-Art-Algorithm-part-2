@@ -14,12 +14,20 @@ from voronoi_painting import VoronoiPainting
 
 
 def score(x: VoronoiPainting) -> float:
+    """
+    The score function, it calculates the difference between the target image and the current painting, the lower the score the better,
+    we will use the mean squared error as the score, we can also add a penalty for having too many points in the painting to encourage simpler paintings.
+    """
     current_score = x.image_diff(x.target_image)
     print(".", end="", flush=True)
     return current_score
 
 
 def pick_best_and_random(pop, maximize=False):
+    """Pick the best individual from the population and a random individual from the population to be the parents for the next generation.
+    :param pop: The population to pick from.
+    :param maximize: Whether to maximize or minimize the score. If True, the best individual will be the one with the highest score, otherwise it will be the one with the lowest score.
+    """
     evaluated_individuals = tuple(filter(lambda x: x.fitness is not None, pop))
     if len(evaluated_individuals) > 0:
         mom = max(
@@ -32,6 +40,10 @@ def pick_best_and_random(pop, maximize=False):
 
 
 def pick_best(pop, maximize=False):
+    """Pick the best individual from the population to be the parent for the next generation.
+    :param pop: The population to pick from.
+    :param maximize: Whether to maximize or minimize the score. If True, the best individual will be the one with the highest score, otherwise it will be the one with the lowest score.
+    """
     evaluated_individuals = tuple(filter(lambda x: x.fitness is not None, pop))
     if len(evaluated_individuals) > 0:
         mom = max(
@@ -43,24 +55,36 @@ def pick_best(pop, maximize=False):
 
 
 def pick_random(pop):
+    """Pick two random individuals from the population to be the parents for the next generation.
+    :param pop: The population to pick from."""
     mom = random.choice(pop)
     dad = random.choice(pop)
     return mom, dad
 
 
-# The mutation function, it mutates the painting by mutating the points, the mutation is done in place, but we return a deepcopy of the painting to avoid issues with multiprocessing and to make sure we don't mutate the original painting in place
 def mutate_painting(x: VoronoiPainting, rate=0.04, sigma=1) -> VoronoiPainting:
+    """Mutate the painting by mutating a percentage of the points in the painting based on the given mutation rate and sigma for mutation strength.
+    :param x: The painting to mutate.
+    :param rate: The percentage of points to mutate (between 0 and 1).
+    :param sigma: The standard deviation for the mutation strength. Higher values will result in more significant mutations.
+    """
     x.mutate_points(rate=rate, sigma=sigma)
     return deepcopy(x)
 
 
 def shrink_painting(x: VoronoiPainting) -> VoronoiPainting:
+    """Shrink the painting by removing a random point.
+    :param x: The painting to shrink.
+    """
     x.shrink_points()
     return deepcopy(x)
 
 
-# The crossover function, it creates a child painting by combining the points of the mom and dad paintings, the crossover is done in place, but we return a deepcopy of the child painting to avoid issues with multiprocessing and to make sure we don't mutate the original paintings in place
 def mate(mom: VoronoiPainting, dad: VoronoiPainting):
+    """Mate two paintings by combining their points to create a child painting. We only save one of the children to keep the population size constant,
+       we can also add some mutation to the child painting to encourage diversity in the population.
+    :param mom: The first parent painting.
+    :param dad: The second parent painting."""
     child_a, child_b = VoronoiPainting.mate(mom, dad)
 
     return deepcopy(child_a)
@@ -71,6 +95,7 @@ def clone(mom: VoronoiPainting):
 
 
 def merge(mom: VoronoiPainting, dad: VoronoiPainting):
+    """Merge two paintings by combining their points to create a child painting with more points than either parent, this is used for genome duplication to increase the number of points in the painting."""
     child_a = VoronoiPainting.merge(mom, dad)
 
     return deepcopy(child_a)
@@ -79,6 +104,9 @@ def merge(mom: VoronoiPainting, dad: VoronoiPainting):
 def print_summary(
     pop, img_template="output%d.png", checkpoint_path="output"
 ) -> Population:
+    """Print a summary of the current population, including the generation number, best score, average score, and chromosome length.
+    Also save an image of the best painting every 10 generations and checkpoint the population every 50 generations.
+    """
     avg_fitness = sum([i.fitness for i in pop.individuals]) / len(pop.individuals)
     chromosome_length = pop.individuals[0].chromosome.num_points
     print(
@@ -95,8 +123,12 @@ def print_summary(
     return pop
 
 
-# Condense similar colors in the palette to create a more distinct set of colors
 def condense_palette(colors, threshold=30):
+    """Condense the palette by removing colors that are too similar to each other based on a distance threshold in RGB space.
+    :param colors: A list of RGB color tuples to condense.
+    :param threshold: The distance threshold in RGB space for considering colors as similar.
+    Colors that are closer than this threshold will be considered similar and only one of them will be kept in the condensed palette.
+    """
     condensed = []
     for color in colors:
         if all(
@@ -107,8 +139,10 @@ def condense_palette(colors, threshold=30):
     return condensed
 
 
-# Reduce the condensed palette to the requested number of colors
 def simplify_palette(colors, target_count):
+    """Simplify the palette by reducing the number of colors to the target count.
+    :param colors: A list of RGB color tuples to simplify.
+    :param target_count: The desired number of colors in the simplified palette."""
     condensed = condense_palette(colors)
     if len(condensed) <= target_count:
         return condensed
@@ -121,6 +155,9 @@ def simplify_palette(colors, target_count):
 
 
 def map_pixels_to_palette(rgb_image, palette):
+    """Map each pixel in the RGB image to the closest color in the palette and return a 2D array of color indices corresponding to the palette.
+    :param rgb_image: A 3D NumPy array representing the RGB image (height x width x 3).
+    :param palette: A list of RGB color tuples representing the palette to map to."""
     palette_np = np.array(palette, dtype=np.int16)
     pixels = rgb_image.reshape(-1, 3).astype(np.int16)
     distances = np.sum((pixels[:, None, :] - palette_np[None, :, :]) ** 2, axis=2)
@@ -129,38 +166,56 @@ def map_pixels_to_palette(rgb_image, palette):
 
 
 def build_region_groups(rgb_image, palette, edges, texture_bins=4, min_area=40):
+    """Build region groups by segmenting the image based on both color and local texture, while respecting edge boundaries to avoid crossing strong edges.
+    :param rgb_image: A 3D NumPy array representing the RGB image (height x width x 3).
+    :param palette: A list of RGB color tuples representing the color palette to use for grouping.
+    :param edges: A 2D binary NumPy array representing edge locations in the image (height x width), where 1 indicates an edge and 0 indicates no edge.
+    :param texture_bins: The number of bins to use for local texture quantization. Higher values will create more texture-based groups.
+    :param min_area: The minimum area (in pixels) for a region to be considered valid. Regions smaller than this will be discarded.
+    """
+    # Compute a simple texture measure using the Laplacian of the grayscale image, then quantize the texture into discrete bins to combine with color-based grouping.
     gray = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2GRAY)
-    # Use local variance proxy as texture signal.
     texture = cv2.Laplacian(gray, cv2.CV_32F, ksize=3)
     texture = cv2.GaussianBlur(np.abs(texture), (5, 5), 0)
-
+    # Quantize texture into bins based on quantiles to ensure a more balanced distribution of texture groups, this allows us to combine texture information with color-based grouping while respecting edge boundaries.
     quantiles = np.linspace(0.0, 1.0, texture_bins + 1)
     boundaries = np.quantile(texture, quantiles)
     # Ensure strictly monotonic bins for digitize.
     boundaries = np.maximum.accumulate(boundaries)
     texture_labels = np.digitize(texture, boundaries[1:-1], right=False)
-
+    # Create the labels for grouping by combining the color labels from the palette mapping and the texture labels, this allows us to create groups that are based on both color and local texture characteristics of the image.
     color_labels = map_pixels_to_palette(rgb_image, palette)
     joint_labels = color_labels * texture_bins + texture_labels
-
+    # Create a mask for edges to ensure that we do not group pixels across strong edges, this helps to preserve important boundaries in the image when creating the region groups.
     edge_mask = edges.astype(np.uint8)
     edge_mask = cv2.dilate(edge_mask, np.ones((3, 3), np.uint8), iterations=1)
-
+    # Iterate through each unique combination of color and texture labels, create a mask for that group while excluding edge pixels, and
+    # then find connected components within that mask to identify distinct regions. We filter out small regions based on the min_area parameter and calculate the
+    #  dominant color for each valid region to create a list of region groups that can be used for seeded initialization of the population.
     regions = []
     max_joint = int(joint_labels.max())
+    # For each unique combination of color and texture labels, we create a mask that includes pixels with that combination while excluding edge pixels.
+    # We then find connected components within that mask to identify distinct regions, filtering out small regions based on the min_area parameter.
+    # For each valid region, we calculate the dominant color and store the pixel coordinates, area, and dominant color in the regions list for use in seeded initialization of the population.
     for label in range(max_joint + 1):
+        # For each unique combination of color and texture labels, we create a mask that includes pixels with that combination while excluding edge pixels.
         mask = ((joint_labels == label) & (edge_mask == 0)).astype(np.uint8)
         if mask.sum() < min_area:
             continue
-
+        # Create a mask for the current group and find connected components to identify distinct regions, filtering out small regions based on the min_area parameter.
         components, cc_labels, stats, _ = cv2.connectedComponentsWithStats(
             mask, connectivity=8
         )
+        # Iterate through the connected components, filter out small regions based on the min_area parameter, and calculate the dominant color for each valid region to
+        #  create a list of region groups for seeded initialization.
         for component_id in range(1, components):
+            # Find the area of the connected component and filter out small regions based on the min_area parameter, this helps to ensure that we only consider regions
+            #  that are large enough to be meaningful for seeded initialization.
             area = int(stats[component_id, cv2.CC_STAT_AREA])
             if area < min_area:
                 continue
-
+            # Calculate the dominant color for the region by taking the median color of the pixels in the region, this provides a representative color for the region
+            # that can be used for seeding points in the population.
             ys, xs = np.where(cc_labels == component_id)
             if len(xs) == 0:
                 continue
@@ -168,6 +223,7 @@ def build_region_groups(rgb_image, palette, edges, texture_bins=4, min_area=40):
             dominant_color = tuple(
                 int(v) for v in np.median(rgb_image[ys, xs], axis=0).astype(np.uint8)
             )
+            # Store the pixel coordinates, area, and dominant color of the region in the regions list for use in seeded initialization of the population.
             regions.append(
                 {
                     "x": xs,
@@ -195,7 +251,6 @@ def build_region_groups(rgb_image, palette, edges, texture_bins=4, min_area=40):
     return regions
 
 
-# Create initial population with points seeded in detected color-texture regions to improve early convergence
 def create_region_seeded_population(
     population_size,
     num_points,
@@ -204,16 +259,35 @@ def create_region_seeded_population(
     fallback_palette,
     region_bias=0.8,
 ):
+    """Create an initial population of Voronoi paintings with points seeded in detected color-texture regions to improve early convergence.
+    :param population_size: The number of paintings in the population.
+    :param num_points: The number of points to use in each painting.
+    :param target_image: The target image that the paintings are trying to evolve towards, used for determining the image dimensions and color palette.
+    :param region_groups: A list of region groups, where each group is a dictionary containing 'x', 'y', 'area', and 'color' keys that describe the pixel coordinates, area, and dominant color of the region.
+    :param fallback_palette: A list of RGB color tuples to use for points that are not seeded in any region, this ensures that all points have a color even if the region-based seeding is not used for some points.
+    :param region_bias: The probability (between 0 and 1) that a point will be seeded in a region as opposed to being placed randomly.
+    Higher values will result in more points being seeded in regions, which can improve convergence but may reduce diversity in the initial population.
+    """
+    # Filter regions to only those with positive area and prepare weights for random selection based on area size,
+    # this allows us to bias point placement towards larger regions which may be more visually significant in the target image.
     weighted_regions = [r for r in region_groups if r["area"] > 0]
     weights = [r["area"] for r in weighted_regions]
 
     chromosomes = []
+    # Create individual paintings by seeding points in regions based on the specified bias, and assigning colors based on the region's dominant color with some random jitter for variation.
     for _ in range(population_size):
         painting = VoronoiPainting(
             num_points, target_image, background_color=(128, 128, 128)
         )
-
+        # For each individual's chromosome, we iterate through its points and decide whether to seed it in a region or place it randomly based on the region_bias.
+        # If seeding in a region, we randomly select a region weighted by area size, then randomly select a pixel within that region for the point's coordinates.
+        # The point's color is set to the region's dominant color with some random jitter added to introduce variation.
+        # If not seeding in a region, the point's color is randomly chosen from the fallback palette.
         for point in painting.points:
+            # With a probability defined by region_bias, we attempt to seed the point in a region. If there are valid regions available,
+            # we randomly select one weighted by area size, then randomly select a pixel from that region for the point's coordinates.
+            # The point's color is set to the region's dominant color with some random jitter added to introduce variation.
+            # If we do not seed in a region (either due to the bias or lack of valid regions), we assign the point a random color from the fallback palette.
             if random.random() < region_bias and weighted_regions:
                 region = random.choices(weighted_regions, weights=weights, k=1)[0]
                 idx = random.randrange(len(region["x"]))
@@ -223,6 +297,7 @@ def create_region_seeded_population(
                 jitter = np.random.randint(-16, 17, size=3)
                 color = np.clip(np.array(base_color) + jitter, 0, 255).astype(np.uint8)
                 point.color = (int(color[0]), int(color[1]), int(color[2]), 255)
+            # Otherwise, we assign the point a random color from the fallback palette to ensure that all points have a color even if they are not seeded in a region.
             else:
                 palette_color = random.choice(fallback_palette)
                 point.color = (
@@ -324,7 +399,7 @@ if __name__ == "__main__":
             print_summary, img_template=image_template, checkpoint_path=checkpoint_path
         )
     )
-
+    # Run the evolution in two phases: first with mating and mutation, then with duplication and mutation, and finally with more mating and mutation.
     evo_step_1 = (
         Evolution()
         .survive(fraction=0.025)
