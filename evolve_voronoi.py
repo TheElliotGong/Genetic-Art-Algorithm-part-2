@@ -319,7 +319,7 @@ if __name__ == "__main__":
     os.makedirs(checkpoint_path, exist_ok=True)
     image_template = os.path.join(checkpoint_path, "drawing_%05d.png")
     target_image = Image.open(target_image_path).convert("RGBA")
-
+    # Variables to control the evolution process, including the number of points in each painting, the population size, and the number of generations for each phase of evolution.
     num_points = 250
     population_size = 250
 

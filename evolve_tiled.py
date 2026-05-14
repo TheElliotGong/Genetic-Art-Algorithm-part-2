@@ -173,14 +173,15 @@ def stitch(tile_results, full_size):
 
 
 if __name__ == "__main__":
+    # Input target image path and load the image, then split it into tiles for processing.
     target_image_path = "./img/girl_with_pearl_earring.jpg"
     target_image = Image.open(target_image_path).convert("RGBA")
-
+    # Define the number of rows and columns to split the image into, then call the function to split the image into tiles.
     n_rows, n_cols = 3, 3
     tiles = split_into_tiles(target_image, n_rows, n_cols)
-
+    # Set the output path for saving intermediate and final images, using a timestamp to create a unique directory for this run.
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    output_dir = os.path.join("./output", f"tiled-{run_id}")
+    output_dir = os.path.join("./output/girl/", f"tiled-{run_id}")
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Target: {target_image.size}")
@@ -191,6 +192,8 @@ if __name__ == "__main__":
 
     tile_results = []
     start = datetime.now()
+    # Run the genetic algorithm on each tile.
+    # For each tile, evolve the painting and save intermediate results, then stitch the evolved tiles together into a final image at the end.
     for i, (x_offset, y_offset, tile) in enumerate(tiles):
         tile_id = f"{i:02d}"
         print(
@@ -204,7 +207,7 @@ if __name__ == "__main__":
             output_dir=output_dir,
             points_initial=50,
             population_size=100,
-            workers=4,
+            workers=8,
             gens_phase1=999,
             gens_phase2=1000,
         )
@@ -214,7 +217,7 @@ if __name__ == "__main__":
 
         partial = stitch(tile_results, target_image.size)
         partial.save(os.path.join(output_dir, f"_partial_after_{tile_id}.png"))
-
+    # Save the final image and log the total time taken for the entire process, along with the path to the final image.
     final = stitch(tile_results, target_image.size)
     final.save(os.path.join(output_dir, "_final.png"))
     total_elapsed = (datetime.now() - start).total_seconds()
