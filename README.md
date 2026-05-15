@@ -1,6 +1,6 @@
-# Stained Glass Genetic Art Algorithm - Revised
+# Stained Glass Art Genetic Algorithm
 
-This project is forked from Sebastian Proost's Voronoi-based Genetic Art Algorithm. We added image pre-processing, Voronoi shape outlining, and a divide-and-conquer approach. 
+This project is forked from Sebastian Proost's Voronoi-based Genetic Art Algorithm and seeks to improve upon it. We added image pre-processing, Voronoi shape outlining, and a divide-and-conquer approach. Will potentially update with additional features/optimization.
 
 Contributors:
 - Elliot Gong
