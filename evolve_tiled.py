@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from PIL import Image
 from evol import Evolution, Population
 from datetime import datetime
@@ -18,9 +20,34 @@ from evolve_voronoi import (
     create_region_seeded_population,
 )
 
+TILE_OVERLAP_PIXELS = 32
 
-def split_into_tiles(target_image, n_rows=3, n_cols=3):
-    """Splits the target image into tiles and returns a list of (x_offset, y_offset, tile_image) tuples.
+
+@dataclass(frozen=True)
+class TileSpec:
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    crop_x0: int
+    crop_y0: int
+    crop_x1: int
+    crop_y1: int
+    image: Image.Image
+
+    @property
+    def crop_size(self):
+        return self.crop_x1 - self.crop_x0, self.crop_y1 - self.crop_y0
+
+    @property
+    def core_size(self):
+        return self.x1 - self.x0, self.y1 - self.y0
+
+
+def split_into_tiles(
+    target_image, n_rows=3, n_cols=3, overlap_pixels=TILE_OVERLAP_PIXELS
+):
+    """Splits the target image into overlapped tiles.
     :param target_image: PIL Image to split into tiles
     :param n_rows: Number of rows to split into
     :param n_cols: Number of columns to split into"""
@@ -34,9 +61,61 @@ def split_into_tiles(target_image, n_rows=3, n_cols=3):
         for tx in range(n_cols):
             x0, x1 = col_edges[tx], col_edges[tx + 1]
             y0, y1 = row_edges[ty], row_edges[ty + 1]
-            tile = target_image.crop((x0, y0, x1, y1))
-            tiles.append((x0, y0, tile))
+            crop_x0 = max(0, x0 - overlap_pixels)
+            crop_y0 = max(0, y0 - overlap_pixels)
+            crop_x1 = min(w, x1 + overlap_pixels)
+            crop_y1 = min(h, y1 + overlap_pixels)
+            tile = target_image.crop((crop_x0, crop_y0, crop_x1, crop_y1))
+            tiles.append(
+                TileSpec(
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    crop_x0=crop_x0,
+                    crop_y0=crop_y0,
+                    crop_x1=crop_x1,
+                    crop_y1=crop_y1,
+                    image=tile,
+                )
+            )
     return tiles
+
+
+def feather_blend_tiles(tile_spec: TileSpec, fade_pixels=TILE_OVERLAP_PIXELS):
+    """Build a feathered weight mask for a tile crop.
+
+    The mask stays at full strength across the tile core and fades only across
+    the overlapped margins. Image borders remain opaque so the final canvas does
+    not get darkened at the outer edges.
+    """
+    width = tile_spec.crop_x1 - tile_spec.crop_x0
+    height = tile_spec.crop_y1 - tile_spec.crop_y0
+
+    weight_x = np.ones(width, dtype=np.float32)
+    weight_y = np.ones(height, dtype=np.float32)
+
+    left_span = tile_spec.x0 - tile_spec.crop_x0
+    if left_span > 0:
+        weight_x[:left_span] = np.linspace(0.0, 1.0, left_span, endpoint=True)
+
+    right_span = tile_spec.crop_x1 - tile_spec.x1
+    if right_span > 0:
+        weight_x[width - right_span :] = np.linspace(
+            1.0, 0.0, right_span, endpoint=True
+        )
+
+    top_span = tile_spec.y0 - tile_spec.crop_y0
+    if top_span > 0:
+        weight_y[:top_span] = np.linspace(0.0, 1.0, top_span, endpoint=True)
+
+    bottom_span = tile_spec.crop_y1 - tile_spec.y1
+    if bottom_span > 0:
+        weight_y[height - bottom_span :] = np.linspace(
+            1.0, 0.0, bottom_span, endpoint=True
+        )
+
+    return np.minimum(1.0, np.outer(weight_y, weight_x))
 
 
 def evolve_tile(
@@ -45,7 +124,7 @@ def evolve_tile(
     output_dir,
     points_initial=50,
     population_size=100,
-    workers=4,
+    workers=1,
     gens_phase1=999,
     gens_phase2=1000,
 ):
@@ -161,15 +240,27 @@ def evolve_tile(
     return pop.current_best.chromosome
 
 
-def stitch(tile_results, full_size):
+def stitch(tile_results, full_size, fade_pixels=TILE_OVERLAP_PIXELS):
     """Stitches together the evolved tiles into a single image of the full size.
-    :param tile_results: List of (x_offset, y_offset, painting) tuples for each tile.
+    :param tile_results: List of (TileSpec, painting) tuples for each tile.
     :param full_size: Tuple of (width, height) for the final stitched image."""
-    canvas = Image.new("RGB", full_size, (0, 0, 0))
-    for x_offset, y_offset, painting in tile_results:
+    canvas = np.zeros((full_size[1], full_size[0], 3), dtype=np.float32)
+    weights = np.zeros((full_size[1], full_size[0]), dtype=np.float32)
+
+    for tile_spec, painting in tile_results:
         tile_img = painting.draw_lines(scale=1, line_width=1).convert("RGB")
-        canvas.paste(tile_img, (x_offset, y_offset))
-    return canvas
+        tile_arr = np.asarray(tile_img, dtype=np.float32)
+        mask = feather_blend_tiles(tile_spec, fade_pixels=fade_pixels)
+        y0, y1 = tile_spec.crop_y0, tile_spec.crop_y1
+        x0, x1 = tile_spec.crop_x0, tile_spec.crop_x1
+
+        canvas[y0:y1, x0:x1] += tile_arr * mask[..., None]
+        weights[y0:y1, x0:x1] += mask
+
+    weights = np.maximum(weights, 1e-6)
+    blended = canvas / weights[..., None]
+    blended = np.clip(blended, 0, 255).astype(np.uint8)
+    return Image.fromarray(blended, mode="RGB")
 
 
 if __name__ == "__main__":
@@ -178,14 +269,19 @@ if __name__ == "__main__":
     target_image = Image.open(target_image_path).convert("RGBA")
     # Define the number of rows and columns to split the image into, then call the function to split the image into tiles.
     n_rows, n_cols = 3, 3
-    tiles = split_into_tiles(target_image, n_rows, n_cols)
+    tiles = split_into_tiles(
+        target_image, n_rows, n_cols, overlap_pixels=TILE_OVERLAP_PIXELS
+    )
     # Set the output path for saving intermediate and final images, using a timestamp to create a unique directory for this run.
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_dir = os.path.join("./output/girl/", f"tiled-{run_id}")
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Target: {target_image.size}")
-    print(f"Splitting into {n_rows}x{n_cols} = {len(tiles)} tiles")
+    print(
+        f"Splitting into {n_rows}x{n_cols} = {len(tiles)} tiles with "
+        f"{TILE_OVERLAP_PIXELS}px overlap"
+    )
     print(f"Output: {output_dir}\n")
 
     target_image.save(os.path.join(output_dir, "_target.png"))
@@ -194,31 +290,34 @@ if __name__ == "__main__":
     start = datetime.now()
     # Run the genetic algorithm on each tile.
     # For each tile, evolve the painting and save intermediate results, then stitch the evolved tiles together into a final image at the end.
-    for i, (x_offset, y_offset, tile) in enumerate(tiles):
+    for i, tile_spec in enumerate(tiles):
         tile_id = f"{i:02d}"
         print(
             f"=== Tile {i + 1}/{len(tiles)} (id {tile_id}) "
-            f"at ({x_offset},{y_offset}), size {tile.size} ==="
+            f"at ({tile_spec.x0},{tile_spec.y0}), core {tile_spec.core_size}, "
+            f"crop {tile_spec.crop_size} ==="
         )
         tile_start = datetime.now()
         best = evolve_tile(
-            tile,
+            tile_spec.image,
             tile_id=tile_id,
             output_dir=output_dir,
             points_initial=50,
             population_size=100,
-            workers=8,
+            workers=1,
             gens_phase1=999,
             gens_phase2=1000,
         )
-        tile_results.append((x_offset, y_offset, best))
+        tile_results.append((tile_spec, best))
         elapsed = (datetime.now() - tile_start).total_seconds()
         print(f"  [Tile {tile_id}] done in {elapsed:.0f}s\n")
 
-        partial = stitch(tile_results, target_image.size)
+        partial = stitch(
+            tile_results, target_image.size, fade_pixels=TILE_OVERLAP_PIXELS
+        )
         partial.save(os.path.join(output_dir, f"_partial_after_{tile_id}.png"))
     # Save the final image and log the total time taken for the entire process, along with the path to the final image.
-    final = stitch(tile_results, target_image.size)
+    final = stitch(tile_results, target_image.size, fade_pixels=TILE_OVERLAP_PIXELS)
     final.save(os.path.join(output_dir, "_final.png"))
     total_elapsed = (datetime.now() - start).total_seconds()
     print(f"Done. Total time: {total_elapsed / 60:.1f} minutes")

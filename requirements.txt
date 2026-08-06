@@ -5,3 +5,8 @@ opencv-python==4.13.0.92
 Pillow==12.1.0
 scikit-image==0.26.0
 scipy==1.17.0
+
+# Web interface (run_web.py)
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32

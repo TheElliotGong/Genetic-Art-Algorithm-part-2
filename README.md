@@ -43,8 +43,47 @@ Then install the dependencies:
 pip install -r requirements.txt
 ```
 
-## Instructions on how to run the project
-To run the genetic algorithm, use one of the following commands:
+## Web interface
+
+The quickest way to use the project is the browser interface, which wraps the
+same algorithm in an upload form, a hyperparameter panel and a live progress
+view:
+
+```bash
+python run_web.py
+```
+
+Then open <http://127.0.0.1:8000>. Pass `--host` / `--port` to change where it
+binds, e.g. `python run_web.py --host 0.0.0.0 --port 8080` to reach it from
+another machine on your network.
+
+What it gives you:
+
+- **A target image** from your machine (drag-and-drop or file picker), from a
+  URL the server fetches for you, or one of the samples in `img/`.
+- **Every hyperparameter** described below, as sliders with live bounds pulled
+  from the server, plus *Quick look* / *Balanced* / *Detailed* presets. Both the
+  whole-image and the tiled strategy are available.
+- **Live progress**: a progress bar over the whole run (with tile boundaries
+  marked in tiled mode), elapsed time and a running estimate of the time
+  remaining, generation counter, similarity to the target, and current point
+  count.
+- **A live preview** of the best individual, refreshed every *N* generations,
+  with a slider that wipes between the target and the evolved painting.
+- **Stop** at any time, then download the final PNG. Finished runs stay in the
+  *Recent runs* list and can be reopened.
+
+Runs execute one at a time on a background worker thread; anything submitted
+while one is in flight is queued and reports its position. Output is written to
+`runs/` (override with `VORONOI_WEB_DATA`).
+
+The REST API behind the page is documented at `/docs` if you would rather drive
+it from a script.
+
+### Running the algorithm directly
+
+To run the genetic algorithm from the command line, use one of the following
+commands:
 
 ```bash
 python evolve_tiled.py  # For the divide-and-conquer approach. Recommended.
@@ -88,6 +127,74 @@ Here are the hyperparameter settings/adjustments you can make regarding the gene
 Notes:
 - Defaults above are taken from the current code and from the example runs in the `__main__` sections. You can tune these values in the respective scripts to trade quality for runtime.
 - For large images prefer the tiled workflow for lower memory usage and easier parallelism.
+
+## Performance
+
+The evolution loop was optimized without changing what it produces: for a given
+genome the renderer, the outlined renderer and the fitness score are identical
+to the original implementation, which `test_equivalence.py` asserts directly
+against a copy of the original code.
+
+Measured on `img/girl_with_pearl_earring_half.jpg` (400x469), 250 points,
+population 60, on a 2 core machine:
+
+| operation | before | after | speedup |
+| --- | --- | --- | --- |
+| render | 2.60 ms | 1.42 ms | 1.8x |
+| fitness (`image_diff`) | 2.59 ms | 1.49 ms | 1.7x |
+| `deepcopy` of a painting | 1.076 ms | 0.022 ms | 48x |
+| serialize one individual | 3.66 ms | 0.18 ms | 20x |
+| serialized size per individual | 1290.8 KiB | 3.4 KiB | 384x |
+| **end to end** | **1.0 gen/s** | **9.7 gen/s** | **9.7x** |
+
+Where the time went:
+
+- **The target image was stored on every painting.** `evol` serializes whole
+  individuals on each `evaluate`, so a 250 individual population shipped the
+  target image 250 times per generation, and every `deepcopy` in the mutation
+  and crossover operators duplicated it again. Targets now live in a
+  per-process registry (`target_cache.py`) and paintings only carry a short
+  content key.
+- **The genome was serialized as objects.** `evol` serializes with `dill`,
+  which dispatches per object; paintings now transport their points as two
+  numpy arrays and rebuild them on arrival.
+- **Rendering reallocated four full size arrays per call.** They are now
+  reused per process, and the color lookup writes into a preallocated buffer.
+- **Operators copied more than they needed to.** Crossover and merge hand back
+  children that already own their points, so the extra `deepcopy` is gone, and
+  mutation samples the indices it needs instead of shuffling all of them.
+
+### Benchmarking
+
+```bash
+python benchmark.py --image ./img/car.jpeg --label after --save-json bench_after.json
+python benchmark.py --compare bench_before.json          # A/B against a saved run
+python benchmark.py --sweep-workers 1,2,4,8              # find the best worker count
+python test_equivalence.py                               # confirm output is unchanged
+```
+
+Run the worker sweep on your own machine before picking `concurrent_workers` /
+`workers`. Now that individuals are small on the wire, worker processes only pay
+off once the per-individual rendering work exceeds the cost of moving
+individuals between processes - for small tiles a lower worker count can be
+faster than a higher one.
+
+### Environment variables
+
+- `VORONOI_PROGRESS=1`: restore the per-evaluation progress dots (off by
+  default; they cost a flushed write per individual per generation).
+- `VORONOI_TARGET_CACHE=<dir>`: where target pixels are spooled so that worker
+  processes started with `spawn` (the default on Windows) can load them.
+  Defaults to a `voronoi-targets` folder in the system temp directory.
+- `VORONOI_EMBED_TARGET=1`: skip the spool file and embed target pixels in every
+  serialized painting. Slower, but makes population checkpoints self-contained
+  and loadable on another machine.
+- `VORONOI_WEB_DATA=<dir>`: where the web interface stores uploads and run
+  output. Defaults to `runs/` next to the code.
+- `VORONOI_ALLOW_PRIVATE_URLS=1`: allow "from URL" fetches that resolve to
+  private, loopback or link-local addresses. Blocked by default, because the
+  server fetches whatever URL it is handed - only enable it if you trust
+  everyone who can reach the app.
 
 
 

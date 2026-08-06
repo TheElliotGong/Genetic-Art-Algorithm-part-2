@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voronoi Genetic Art</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>Voronoi Genetic Art</h1>
+      <p>Evolve a stained-glass painting towards any image.</p>
+    </div>
+  </div>
+  <a class="ghost-link" href="/docs" target="_blank" rel="noopener">API docs</a>
+</header>
+
+<main class="layout">
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Left column: target picker + hyperparameters                        -->
+  <!-- ------------------------------------------------------------------ -->
+  <section class="panel controls" aria-label="Run configuration">
+
+    <h2 class="panel-title">1 &middot; Target image</h2>
+
+    <div class="tabs" role="tablist">
+      <button class="tab is-active" role="tab" data-source="file">Upload</button>
+      <button class="tab" role="tab" data-source="url">From URL</button>
+      <button class="tab" role="tab" data-source="sample">Samples</button>
+    </div>
+
+    <div class="source-pane is-active" data-pane="file">
+      <label id="dropzone" class="dropzone" for="file-input">
+        <input id="file-input" type="file" accept="image/*" hidden>
+        <strong>Drop an image here</strong>
+        <span>or click to browse &mdash; PNG, JPEG, WebP up to 25&nbsp;MB</span>
+      </label>
+    </div>
+
+    <div class="source-pane" data-pane="url">
+      <div class="row">
+        <input id="url-input" type="url" placeholder="https://example.com/photo.jpg" spellcheck="false">
+        <button id="url-load" class="btn btn-secondary">Fetch</button>
+      </div>
+      <p class="hint">The server downloads the image. Private/loopback hosts are blocked unless <code>VORONOI_ALLOW_PRIVATE_URLS=1</code>.</p>
+    </div>
+
+    <div class="source-pane" data-pane="sample">
+      <div id="sample-grid" class="sample-grid"></div>
+    </div>
+
+    <div id="target-card" class="target-card" hidden>
+      <img id="target-thumb" alt="Selected target image">
+      <div class="target-meta">
+        <strong id="target-label"></strong>
+        <span id="target-dims"></span>
+        <button id="target-clear" class="link-btn">Choose a different image</button>
+      </div>
+    </div>
+
+    <p id="source-error" class="error-text" hidden></p>
+
+    <h2 class="panel-title">2 &middot; Hyperparameters</h2>
+
+    <div class="presets">
+      <span class="presets-label">Preset</span>
+      <button class="chip" data-preset="quick">Quick look</button>
+      <button class="chip is-active" data-preset="balanced">Balanced</button>
+      <button class="chip" data-preset="detailed">Detailed</button>
+    </div>
+
+    <fieldset class="group">
+      <legend>Strategy</legend>
+
+      <div class="field field-inline">
+        <label for="mode">Mode</label>
+        <select id="mode" data-param="mode">
+          <option value="single">Single canvas</option>
+          <option value="tiled">Tiled (evolve tiles, then blend)</option>
+        </select>
+      </div>
+      <p class="hint">Tiled runs give finer local detail on large images at the cost of running one population per tile.</p>
+
+      <div class="field" data-slider>
+        <label for="generations">Generations <span class="help" title="Generations run per target. In tiled mode this is per tile.">?</span></label>
+        <div class="slider-row">
+          <input id="generations" type="range" data-param="generations" min="1" max="5000" step="1">
+          <input class="numeric" type="number" data-mirror="generations">
+        </div>
+      </div>
+
+      <div class="field" data-slider>
+        <label for="population_size">Population size <span class="help" title="Individuals kept each generation. Bigger populations search harder but each generation costs more.">?</span></label>
+        <div class="slider-row">
+          <input id="population_size" type="range" data-param="population_size" min="4" max="400" step="1">
+          <input class="numeric" type="number" data-mirror="population_size">
+        </div>
+      </div>
+
+      <div class="field" data-slider>
+        <label for="num_points">Voronoi points <span class="help" title="Cells each painting starts with. Genome duplication doubles this halfway through.">?</span></label>
+        <div class="slider-row">
+          <input id="num_points" type="range" data-param="num_points" min="4" max="2000" step="1">
+          <input class="numeric" type="number" data-mirror="num_points">
+        </div>
+      </div>
+
+      <label class="switch">
+        <input id="genome_duplication" type="checkbox" data-param="genome_duplication">
+        <span>Genome duplication at the halfway point</span>
+      </label>
+    </fieldset>
+
+    <fieldset class="group">
+      <legend>Mutation &amp; selection</legend>
+
+      <div class="field" data-slider>
+        <label for="mutation_rate">Mutation rate <span class="help" title="Fraction of a child's points that get mutated.">?</span></label>
+        <div class="slider-row">
+          <input id="mutation_rate" type="range" data-param="mutation_rate" min="0" max="0.5" step="0.005">
+          <input class="numeric" type="number" data-mirror="mutation_rate" step="0.005">
+        </div>
+      </div>
+
+      <div class="field" data-slider>
+        <label for="mutation_sigma">Mutation strength <span class="help" title="Scales how far positions and colours can jump in one mutation.">?</span></label>
+        <div class="slider-row">
+          <input id="mutation_sigma" type="range" data-param="mutation_sigma" min="0.05" max="3" step="0.05">
+          <input class="numeric" type="number" data-mirror="mutation_sigma" step="0.05">
+        </div>
+      </div>
+
+      <div class="field" data-slider>
+        <label for="survive_fraction">Survival fraction <span class="help" title="Share of the population that breeds the next generation. At least two individuals always survive.">?</span></label>
+        <div class="slider-row">
+          <input id="survive_fraction" type="range" data-param="survive_fraction" min="0.005" max="0.5" step="0.005">
+          <input class="numeric" type="number" data-mirror="survive_fraction" step="0.005">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="group">
+      <legend>Seeding</legend>
+
+      <div class="field" data-slider>
+        <label for="region_bias">Region bias <span class="help" title="Chance a starting point lands inside a detected colour/texture region instead of anywhere on the canvas.">?</span></label>
+        <div class="slider-row">
+          <input id="region_bias" type="range" data-param="region_bias" min="0" max="1" step="0.01">
+          <input class="numeric" type="number" data-mirror="region_bias" step="0.01">
+        </div>
+      </div>
+
+      <div class="field" data-slider>
+        <label for="initial_colors">Palette colours extracted</label>
+        <div class="slider-row">
+          <input id="initial_colors" type="range" data-param="initial_colors" min="2" max="256" step="1">
+          <input class="numeric" type="number" data-mirror="initial_colors">
+        </div>
+      </div>
+
+      <div class="field" data-slider>
+        <label for="final_colors">Palette colours kept</label>
+        <div class="slider-row">
+          <input id="final_colors" type="range" data-param="final_colors" min="1" max="128" step="1">
+          <input class="numeric" type="number" data-mirror="final_colors">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="group" id="tiling-group" hidden>
+      <legend>Tiling</legend>
+      <div class="grid-2">
+        <div class="field" data-slider>
+          <label for="tile_rows">Rows</label>
+          <div class="slider-row">
+            <input id="tile_rows" type="range" data-param="tile_rows" min="1" max="6" step="1">
+            <input class="numeric" type="number" data-mirror="tile_rows">
+          </div>
+        </div>
+        <div class="field" data-slider>
+          <label for="tile_cols">Columns</label>
+          <div class="slider-row">
+            <input id="tile_cols" type="range" data-param="tile_cols" min="1" max="6" step="1">
+            <input class="numeric" type="number" data-mirror="tile_cols">
+          </div>
+        </div>
+      </div>
+      <div class="field" data-slider>
+        <label for="tile_overlap">Overlap (px) <span class="help" title="Neighbouring tiles are feather-blended across this margin so seams disappear.">?</span></label>
+        <div class="slider-row">
+          <input id="tile_overlap" type="range" data-param="tile_overlap" min="0" max="128" step="1">
+          <input class="numeric" type="number" data-mirror="tile_overlap">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="group">
+      <legend>Output</legend>
+
+      <div class="field" data-slider>
+        <label for="max_dimension">Working resolution (px) <span class="help" title="Longest edge the target is scaled to before evolving. This is the main speed dial.">?</span></label>
+        <div class="slider-row">
+          <input id="max_dimension" type="range" data-param="max_dimension" min="64" max="1200" step="8">
+          <input class="numeric" type="number" data-mirror="max_dimension">
+        </div>
+      </div>
+
+      <div class="field" data-slider>
+        <label for="render_scale">Final render scale <span class="help" title="Supersampling factor applied only to the final image.">?</span></label>
+        <div class="slider-row">
+          <input id="render_scale" type="range" data-param="render_scale" min="1" max="8" step="1">
+          <input class="numeric" type="number" data-mirror="render_scale">
+        </div>
+      </div>
+
+      <label class="switch">
+        <input id="outline" type="checkbox" data-param="outline">
+        <span>Draw outlines between cells</span>
+      </label>
+
+      <div class="grid-2" id="outline-options">
+        <div class="field" data-slider>
+          <label for="outline_width">Outline width</label>
+          <div class="slider-row">
+            <input id="outline_width" type="range" data-param="outline_width" min="1" max="6" step="1">
+            <input class="numeric" type="number" data-mirror="outline_width">
+          </div>
+        </div>
+        <div class="field field-inline">
+          <label for="outline_color">Outline colour</label>
+          <input id="outline_color" type="color" data-param="outline_color">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="group">
+      <legend>Performance</legend>
+      <div class="grid-2">
+        <div class="field" data-slider>
+          <label for="workers">Worker processes <span class="help" title="Above 1 only helps for large populations, since every individual is serialized to the workers.">?</span></label>
+          <div class="slider-row">
+            <input id="workers" type="range" data-param="workers" min="1" max="16" step="1">
+            <input class="numeric" type="number" data-mirror="workers">
+          </div>
+        </div>
+        <div class="field" data-slider>
+          <label for="preview_every">Preview every (gens)</label>
+          <div class="slider-row">
+            <input id="preview_every" type="range" data-param="preview_every" min="1" max="200" step="1">
+            <input class="numeric" type="number" data-mirror="preview_every">
+          </div>
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="run-bar">
+      <button id="run-btn" class="btn btn-primary" disabled>Start evolving</button>
+      <span id="run-summary" class="run-summary"></span>
+    </div>
+    <p id="run-error" class="error-text" hidden></p>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Right column: progress + preview                                    -->
+  <!-- ------------------------------------------------------------------ -->
+  <section class="panel results" aria-label="Run progress">
+
+    <div id="idle-state" class="idle-state">
+      <div class="idle-art" aria-hidden="true"></div>
+      <h2>No run yet</h2>
+      <p>Pick a target image and press <strong>Start evolving</strong>. Progress, a live preview and timings show up here.</p>
+    </div>
+
+    <div id="run-state" hidden>
+      <div class="progress-head">
+        <div>
+          <span id="status-pill" class="pill">queued</span>
+          <span id="stage-text" class="stage-text"></span>
+        </div>
+        <button id="cancel-btn" class="btn btn-danger">Stop</button>
+      </div>
+
+      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progress-bar-root">
+        <div id="progress-fill" class="progress-fill"></div>
+        <div id="tile-ticks" class="tile-ticks"></div>
+      </div>
+
+      <div class="progress-legend">
+        <span id="progress-percent">0%</span>
+        <span id="progress-gens">generation 0 / 0</span>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span class="stat-label">Elapsed</span><strong id="stat-elapsed">0s</strong></div>
+        <div class="stat"><span class="stat-label">Remaining</span><strong id="stat-eta">&mdash;</strong></div>
+        <div class="stat"><span class="stat-label">Similarity</span><strong id="stat-similarity">&mdash;</strong></div>
+        <div class="stat"><span class="stat-label">Points</span><strong id="stat-points">&mdash;</strong></div>
+        <div class="stat"><span class="stat-label">Best error</span><strong id="stat-best">&mdash;</strong></div>
+        <div class="stat" id="stat-tile-wrap" hidden><span class="stat-label">Tile</span><strong id="stat-tile">&mdash;</strong></div>
+      </div>
+
+      <div class="viewer">
+        <div class="viewer-head">
+          <h3>Live preview</h3>
+          <label class="split-control">
+            <span>Target</span>
+            <input id="split-range" type="range" min="0" max="100" value="100">
+            <span>Evolved</span>
+          </label>
+        </div>
+        <div class="viewer-stage">
+          <div id="viewer-inner" class="viewer-inner">
+            <img id="viewer-target" alt="Target image">
+            <img id="viewer-preview" alt="Evolved painting">
+          </div>
+          <div id="viewer-empty" class="viewer-empty">Waiting for the first preview&hellip;</div>
+        </div>
+      </div>
+
+      <div class="chart-wrap">
+        <h3>Similarity over generations</h3>
+        <svg id="chart" viewBox="0 0 600 140" preserveAspectRatio="none" role="img" aria-label="Similarity over generations">
+          <polyline id="chart-line" fill="none" stroke-width="2" points=""></polyline>
+          <polygon id="chart-area" points=""></polygon>
+        </svg>
+        <div class="chart-axis"><span id="chart-min">&mdash;</span><span id="chart-max">&mdash;</span></div>
+      </div>
+
+      <div id="result-bar" class="result-bar" hidden>
+        <a id="download-btn" class="btn btn-primary" download>Download PNG</a>
+        <span id="result-note" class="hint"></span>
+      </div>
+    </div>
+
+    <div class="history">
+      <h3>Recent runs</h3>
+      <ul id="history-list" class="history-list"><li class="history-empty">Nothing yet.</li></ul>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

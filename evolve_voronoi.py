@@ -13,13 +13,20 @@ import numpy as np
 from voronoi_painting import VoronoiPainting
 
 
+# Printing a dot per evaluation costs a flushed write per individual per
+# generation, and from worker processes it also serializes on the shared stream.
+# Set VORONOI_PROGRESS=1 to get the old per-evaluation progress dots back.
+SHOW_EVAL_PROGRESS = os.environ.get("VORONOI_PROGRESS", "").strip() not in ("", "0")
+
+
 def score(x: VoronoiPainting) -> float:
     """
     The score function, it calculates the difference between the target image and the current painting, the lower the score the better,
     we will use the mean squared error as the score, we can also add a penalty for having too many points in the painting to encourage simpler paintings.
     """
     current_score = x.image_diff(x.target_image)
-    print(".", end="", flush=True)
+    if SHOW_EVAL_PROGRESS:
+        print(".", end="", flush=True)
     return current_score
 
 
@@ -64,30 +71,31 @@ def pick_random(pop):
 
 def mutate_painting(x: VoronoiPainting, rate=0.04, sigma=1) -> VoronoiPainting:
     """Mutate the painting by mutating a percentage of the points in the painting based on the given mutation rate and sigma for mutation strength.
+    The copy is taken first so the parent is never mutated in place.
     :param x: The painting to mutate.
     :param rate: The percentage of points to mutate (between 0 and 1).
     :param sigma: The standard deviation for the mutation strength. Higher values will result in more significant mutations.
     """
-    x.mutate_points(rate=rate, sigma=sigma)
-    return deepcopy(x)
+    child = deepcopy(x)
+    child.mutate_points(rate=rate, sigma=sigma)
+    return child
 
 
 def shrink_painting(x: VoronoiPainting) -> VoronoiPainting:
     """Shrink the painting by removing a random point.
     :param x: The painting to shrink.
     """
-    x.shrink_points()
-    return deepcopy(x)
+    child = deepcopy(x)
+    child.shrink_points()
+    return child
 
 
 def mate(mom: VoronoiPainting, dad: VoronoiPainting):
-    """Mate two paintings by combining their points to create a child painting. We only save one of the children to keep the population size constant,
+    """Mate two paintings by combining their points to create a child painting. We only build one of the children to keep the population size constant,
        we can also add some mutation to the child painting to encourage diversity in the population.
     :param mom: The first parent painting.
     :param dad: The second parent painting."""
-    child_a, child_b = VoronoiPainting.mate(mom, dad)
-
-    return deepcopy(child_a)
+    return VoronoiPainting.breed(mom, dad)
 
 
 def clone(mom: VoronoiPainting):
@@ -96,9 +104,7 @@ def clone(mom: VoronoiPainting):
 
 def merge(mom: VoronoiPainting, dad: VoronoiPainting):
     """Merge two paintings by combining their points to create a child painting with more points than either parent, this is used for genome duplication to increase the number of points in the painting."""
-    child_a = VoronoiPainting.merge(mom, dad)
-
-    return deepcopy(child_a)
+    return VoronoiPainting.merge(mom, dad)
 
 
 def print_summary(
