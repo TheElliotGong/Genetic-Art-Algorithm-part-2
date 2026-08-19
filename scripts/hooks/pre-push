@@ -1,0 +1,34 @@
+#!/bin/sh
+# Run the test suite before letting a push leave the machine.
+#
+# Installed by `python scripts/install_hooks.py`. Skip it for one push with:
+#
+#     git push --no-verify
+#
+# The suite takes a few seconds, so it runs in full rather than skipping the
+# slow-marked tests.
+
+set -e
+
+echo "pre-push: running the test suite..."
+
+if [ -x ".venv/Scripts/python.exe" ]; then
+    PYTHON=".venv/Scripts/python.exe"      # Windows virtualenv
+elif [ -x ".venv/bin/python" ]; then
+    PYTHON=".venv/bin/python"              # POSIX virtualenv
+elif [ -x "venv/Scripts/python.exe" ]; then
+    PYTHON="venv/Scripts/python.exe"
+elif [ -x "venv/bin/python" ]; then
+    PYTHON="venv/bin/python"
+else
+    PYTHON="python"
+fi
+
+if ! "$PYTHON" scripts/run_tests.py; then
+    echo ""
+    echo "pre-push: tests failed - push aborted."
+    echo "          Fix them, or use 'git push --no-verify' to override."
+    exit 1
+fi
+
+echo "pre-push: tests passed."

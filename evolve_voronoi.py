@@ -12,7 +12,6 @@ import numpy as np
 
 from voronoi_painting import VoronoiPainting
 
-
 # Printing a dot per evaluation costs a flushed write per individual per
 # generation, and from worker processes it also serializes on the shared stream.
 # Set VORONOI_PROGRESS=1 to get the old per-evaluation progress dots back.
@@ -164,8 +163,8 @@ def map_pixels_to_palette(rgb_image, palette):
     """Map each pixel in the RGB image to the closest color in the palette and return a 2D array of color indices corresponding to the palette.
     :param rgb_image: A 3D NumPy array representing the RGB image (height x width x 3).
     :param palette: A list of RGB color tuples representing the palette to map to."""
-    palette_np = np.array(palette, dtype=np.int16)
-    pixels = rgb_image.reshape(-1, 3).astype(np.int16)
+    palette_np = np.array(palette, dtype=np.int32)
+    pixels = rgb_image.reshape(-1, 3).astype(np.int32)
     distances = np.sum((pixels[:, None, :] - palette_np[None, :, :]) ** 2, axis=2)
     labels = np.argmin(distances, axis=1)
     return labels.reshape(rgb_image.shape[0], rgb_image.shape[1])

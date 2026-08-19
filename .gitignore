@@ -5,3 +5,14 @@ __pycache__/
 .claude/
 output/
 runs/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
+
+# Local run artifacts
+tile_sample_tmp.png

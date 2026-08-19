@@ -1,0 +1,41 @@
+# Test and coverage configuration. The project itself is a set of scripts rather
+# than an installable package, so this file only carries tooling settings.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# The modules under test live at the repository root, so it has to be importable
+# from the tests without installing anything.
+pythonpath = ["."]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+markers = [
+    "slow: runs a real evolution loop; excluded by `pytest -m 'not slow'`.",
+]
+filterwarnings = [
+    # Deprecations coming out of this project's own code are bugs to fix.
+    "error::DeprecationWarning:webapp.*",
+    "error::DeprecationWarning:voronoi_painting",
+    "error::DeprecationWarning:target_cache",
+    # Starlette prefers httpx2 for its TestClient; httpx still works and is what
+    # the pinned FastAPI release was tested against.
+    "ignore:Using `httpx` with `starlette.testclient`:UserWarning",
+    "ignore:Using `httpx` with `starlette.testclient`:DeprecationWarning",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["voronoi_painting", "target_cache", "evolve_voronoi", "evolve_tiled", "webapp"]
+omit = ["tests/*", "benchmark.py", "voronoi_example.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]

@@ -1,0 +1,12 @@
+# Everything needed to run the test suite, on top of requirements.txt.
+#
+#     pip install -r requirements.txt -r requirements-dev.txt
+#     pytest
+
+-r requirements.txt
+
+pytest==9.0.1
+pytest-cov==7.1.0
+
+# Starlette's TestClient (used by tests/test_api.py) is built on httpx.
+httpx==0.28.1
