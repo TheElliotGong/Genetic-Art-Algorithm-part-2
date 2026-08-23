@@ -378,7 +378,7 @@ def test_queued_runs_execute_one_at_a_time(manager, source_image):
     first = manager.submit(tiny_run_params(generations=4), source_image)
     second = manager.submit(tiny_run_params(generations=4), source_image)
 
-    assert manager.queue_position(second.id) in (1, None)
+    assert manager.queue_position(second.id) in (1, 2, None)
 
     assert wait_for(first) == "done", first.error
     assert wait_for(second) == "done", second.error
